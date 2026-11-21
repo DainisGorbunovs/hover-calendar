@@ -54,6 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let now = ProcessInfo.processInfo.systemUptime
         let point = NSEvent.mouseLocation
         if let anchor, let panel {
+            panel.updateGlobePointer(point)
             if anchor.contains(point) || panel.frame.contains(point) {
                 leftAt = nil
             } else if let leftAt {
@@ -109,7 +110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func dismiss() {
-        panel?.orderOut(nil)
+        panel?.closePopup()
         panel = nil
         anchor = nil
         candidate = nil

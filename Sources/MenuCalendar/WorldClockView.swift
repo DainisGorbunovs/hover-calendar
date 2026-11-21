@@ -6,9 +6,12 @@ struct WorldClockView: View {
 
     var body: some View {
         TimelineView(.everyMinute) { context in
+            let locations = WorldClockLocation.orderedByLocalTime(at: context.date)
+            let sun = SolarPosition(at: context.date)
             VStack(spacing: 0) {
-                ForEach(WorldClockLocation.locations) { location in
+                ForEach(locations) { location in
                     let reading = location.reading(at: context.date)
+                    let elevation = sun.elevation(at: location)
 
                     Button {
                         showMap(location)
@@ -31,9 +34,12 @@ struct WorldClockView: View {
                             Spacer(minLength: 8)
 
                             VStack(alignment: .trailing, spacing: 1) {
-                                Text(reading.time)
-                                    .font(.system(size: 17, weight: .medium).monospacedDigit())
-                                    .foregroundStyle(palette.text)
+                                HStack(spacing: 5) {
+                                    daylightIcon(elevation: elevation)
+                                    Text(reading.time)
+                                        .font(.system(size: 17, weight: .medium).monospacedDigit())
+                                        .foregroundStyle(palette.text)
+                                }
                                 Text(reading.differentDay ?? "")
                                     .font(.system(size: 9, weight: .medium))
                                     .foregroundStyle(palette.secondary)
@@ -46,7 +52,7 @@ struct WorldClockView: View {
                     }
                     .buttonStyle(CalendarButtonStyle(palette: palette))
                     .overlay(alignment: .bottom) {
-                        if location.id != WorldClockLocation.locations.last?.id {
+                        if location.id != locations.last?.id {
                             Rectangle()
                                 .fill(palette.outline)
                                 .frame(height: 0.5)
@@ -60,5 +66,16 @@ struct WorldClockView: View {
                 }
             }
         }
+    }
+
+    private func daylightIcon(elevation: Double) -> some View {
+        let symbol = elevation >= -0.833 ? "sun.max" : elevation >= -6 ? "sun.horizon" : "moon.stars"
+        let label = elevation >= -0.833 ? "Daylight" : elevation >= -6 ? "Twilight" : "Night"
+        return Image(systemName: symbol)
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(elevation >= -6 ? palette.weekendText : palette.secondary)
+            .frame(width: 14)
+            .accessibilityLabel(label)
+            .help(label)
     }
 }

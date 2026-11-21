@@ -14,6 +14,7 @@ bin_dir=$(swift build --configuration release --show-bin-path --cache-path "$bui
 mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
 install -m 755 "$bin_dir/MenuCalendar" "$app_dir/Contents/MacOS/MenuCalendar"
 cp -R "$project_dir/Sources/MenuCalendar/EarthTextures" "$app_dir/Contents/Resources/"
+install -m 644 "$project_dir/Sources/MenuCalendar/UKBankHolidays.json" "$app_dir/Contents/Resources/UKBankHolidays.json"
 cp "$project_dir/Info.plist" "$app_dir/Contents/Info.plist"
 codesign --force --sign "${CODE_SIGN_IDENTITY:--}" "$app_dir"
 printf '%s\n' "$app_dir"

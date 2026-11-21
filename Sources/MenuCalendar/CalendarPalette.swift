@@ -11,6 +11,7 @@ struct CalendarPalette {
     let weekendSurface: Color
     let weekendText: Color
     let accent: Color
+    let holiday: Color
 
     static let dark = CalendarPalette(
         surface: Color(rgb: 0x1C1D23),
@@ -22,7 +23,8 @@ struct CalendarPalette {
         adjacent: Color(rgb: 0x928E9F),
         weekendSurface: Color(rgb: 0x30262C),
         weekendText: Color(rgb: 0xEDB5A2),
-        accent: Color(rgb: 0x7152CE)
+        accent: Color(rgb: 0x7152CE),
+        holiday: Color(rgb: 0x80D5C2)
     )
 
     static let light = CalendarPalette(
@@ -35,7 +37,8 @@ struct CalendarPalette {
         adjacent: Color(rgb: 0x6D6774),
         weekendSurface: Color(rgb: 0xF7EAE4),
         weekendText: Color(rgb: 0x94493C),
-        accent: Color(rgb: 0x6847C7)
+        accent: Color(rgb: 0x6847C7),
+        holiday: Color(rgb: 0x136B5C)
     )
 }
 

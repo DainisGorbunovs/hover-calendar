@@ -20,19 +20,22 @@ final class EarthMapRenderer {
     init?(dayURL: URL, nightURL: URL) {
         guard let dayImage = Self.loadImage(at: dayURL), let nightImage = Self.loadImage(at: nightURL),
               dayImage.width == nightImage.width, dayImage.height == nightImage.height,
-              dayImage.width == dayImage.height * 2,
-              let day = Self.pixels(in: dayImage), let night = Self.pixels(in: nightImage) else { return nil }
+              dayImage.width == dayImage.height * 2 else { return nil }
 
+        let columns = min(dayImage.width, 720)
+        let rows = columns / 2
+        guard let day = Self.pixels(in: dayImage, width: columns, height: rows),
+              let night = Self.pixels(in: nightImage, width: columns, height: rows) else { return nil }
         self.day = day
         self.night = night
-        width = dayImage.width
-        height = dayImage.height
-        latitudes = (0..<dayImage.height).map { row in
-            let radians = Float.pi * (0.5 - (Float(row) + 0.5) / Float(dayImage.height))
+        width = columns
+        height = rows
+        latitudes = (0..<rows).map { row in
+            let radians = Float.pi * (0.5 - (Float(row) + 0.5) / Float(rows))
             return SIMD2(cos(radians), sin(radians))
         }
-        longitudes = (0..<dayImage.width).map { column in
-            let radians = 2 * Float.pi * ((Float(column) + 0.5) / Float(dayImage.width) - 0.5)
+        longitudes = (0..<columns).map { column in
+            let radians = 2 * Float.pi * ((Float(column) + 0.5) / Float(columns) - 0.5)
             return SIMD2(cos(radians), sin(radians))
         }
     }
@@ -86,13 +89,14 @@ final class EarthMapRenderer {
         return CGImageSourceCreateImageAtIndex(source, 0, nil)
     }
 
-    private static func pixels(in image: CGImage) -> [UInt8]? {
-        var pixels = [UInt8](repeating: 0, count: image.width * image.height * 4)
+    private static func pixels(in image: CGImage, width: Int, height: Int) -> [UInt8]? {
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
         let didDraw = pixels.withUnsafeMutableBytes { buffer in
-            guard let context = CGContext(data: buffer.baseAddress, width: image.width, height: image.height,
-                                          bitsPerComponent: 8, bytesPerRow: image.width * 4,
+            guard let context = CGContext(data: buffer.baseAddress, width: width, height: height,
+                                          bitsPerComponent: 8, bytesPerRow: width * 4,
                                           space: colorSpace, bitmapInfo: layout.rawValue) else { return false }
-            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+            context.interpolationQuality = .high
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
             return true
         }
         return didDraw ? pixels : nil

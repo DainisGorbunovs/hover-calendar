@@ -6,36 +6,46 @@ struct DaylightMapView: View {
     let palette: CalendarPalette
     @Binding var selected: WorldClockLocation?
     let swipes: AnyPublisher<TrackpadMotion, Never>
+    let pinchInput: GlobePinchInput
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var camera: GlobeCamera
     @State private var dragStart: GlobeCamera?
     @State private var trackpadStart: GlobeCamera?
-    @State private var pinchStart: Double?
+    @State private var pinchStart: GlobeCamera?
+    @State private var dragSample: (translation: CGSize, date: Date)?
+    @State private var dragVelocity: CGSize = .zero
+    @State private var acceptsMomentum = false
+    @State private var cameraTask: Task<Void, Never>?
     @State private var hoverTask: Task<Void, Never>?
     @State private var metal: GlobeMetalRenderer.Resources?
     @State private var preparing = true
     @State private var isChoosingCity = false
+    @State private var cityPickerHover: Task<Void, Never>?
+    @State private var overCityButton = false
+    @State private var overCityList = false
 
     private let locations = WorldClockLocation.locations
 
     private struct Textures {
         let day: URL
         let night: URL
+        let cloud: URL
     }
 
     private static let textures: Textures? = {
         let bundle = Bundle.main.bundleURL.pathExtension == "app" ? Bundle.main : Bundle.module
         guard let day = bundle.url(forResource: "EarthDay", withExtension: "jpg", subdirectory: "EarthTextures"),
-              let night = bundle.url(forResource: "EarthNight", withExtension: "jpg", subdirectory: "EarthTextures")
+              let night = bundle.url(forResource: "EarthNight", withExtension: "jpg", subdirectory: "EarthTextures"),
+              let cloud = bundle.url(forResource: "EarthClouds", withExtension: "jpg", subdirectory: "EarthTextures")
         else { return nil }
-        return Textures(day: day, night: night)
+        return Textures(day: day, night: night, cloud: cloud)
     }()
 
     private static let preparation = {
         let textureURLs = textures
         return Task.detached(priority: .utility) {
-            textureURLs.flatMap { GlobeMetalRenderer.Resources(dayURL: $0.day, nightURL: $0.night) }
+            textureURLs.flatMap { GlobeMetalRenderer.Resources(dayURL: $0.day, nightURL: $0.night, cloudURL: $0.cloud) }
         }
     }()
 
@@ -44,10 +54,12 @@ struct DaylightMapView: View {
     }
     private static let fallback = textures.flatMap { EarthMapRenderer(dayURL: $0.day, nightURL: $0.night) }
 
-    init(palette: CalendarPalette, selected: Binding<WorldClockLocation?>, swipes: AnyPublisher<TrackpadMotion, Never>) {
+    init(palette: CalendarPalette, selected: Binding<WorldClockLocation?>,
+         swipes: AnyPublisher<TrackpadMotion, Never>, pinchInput: GlobePinchInput) {
         self.palette = palette
         _selected = selected
         self.swipes = swipes
+        self.pinchInput = pinchInput
 
         let overview = GlobeCamera.overview(sun: SolarPosition(at: .now))
         _camera = State(initialValue: selected.wrappedValue.map { overview.focused(on: $0) } ?? overview)
@@ -67,6 +79,7 @@ struct DaylightMapView: View {
                 .overlay(alignment: .bottomLeading) {
                     if isChoosingCity {
                         cityPicker(active)
+                            .onHover { hoverCityPicker($0, fromButton: false) }
                             .padding(.leading, 6)
                             .padding(.bottom, 33)
                     }
@@ -77,7 +90,12 @@ struct DaylightMapView: View {
             preparing = false
         }
         .onReceive(swipes, perform: orbitWithTrackpad)
-        .onDisappear { hoverTask?.cancel() }
+        .onReceive(pinchInput.events, perform: pinch)
+        .onDisappear {
+            hoverTask?.cancel()
+            cityPickerHover?.cancel()
+            stopCameraMotion()
+        }
     }
 
     private func scene(active: WorldClockLocation?, at date: Date, sun: SolarPosition) -> some View {
@@ -85,12 +103,16 @@ struct DaylightMapView: View {
 
         return ZStack(alignment: .topTrailing) {
             if let metal {
-                GlobeScene(camera: camera, sun: sun, resources: metal, selectedID: active?.id) { location in
-                    isChoosingCity = false
-                    if let location { focus(on: location, withFeedback: true) }
-                }
+                GlobeScene(
+                    camera: camera, sun: sun, resources: metal, selectedID: active?.id,
+                    select: { location in
+                        isChoosingCity = false
+                        if let location { focus(on: location, withFeedback: true) }
+                    },
+                    pinchInput: pinchInput,
+                    zoomIn: { point, size in zoom(by: 1.34, around: point, in: size) }
+                )
                 .simultaneousGesture(orbitGesture)
-                .simultaneousGesture(pinchGesture)
 
                 VStack(spacing: 2) {
                     globeControl("arrow.counterclockwise", label: "Reset globe view") {
@@ -204,7 +226,9 @@ struct DaylightMapView: View {
 
         return HStack(spacing: 5) {
             Button {
+                cityPickerHover?.cancel()
                 isChoosingCity.toggle()
+                stopCameraMotion()
                 if !isChoosingCity { hoverTask?.cancel() }
             } label: {
                 HStack(spacing: 4) {
@@ -221,6 +245,7 @@ struct DaylightMapView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Choose a city, currently \(location.name)")
             .help("Choose a city")
+            .onHover { hoverCityPicker($0, fromButton: true) }
 
             Spacer(minLength: 0)
 
@@ -243,48 +268,92 @@ struct DaylightMapView: View {
     }
 
     private var orbitGesture: some Gesture {
-        DragGesture(minimumDistance: 4)
+        DragGesture(minimumDistance: 3)
             .onChanged { drag in
+                guard pinchStart == nil else { return }
                 if dragStart == nil {
                     hoverTask?.cancel()
+                    stopCameraMotion()
                     dragStart = camera
                 }
-                guard let dragStart else { return }
-                let position = dragStart.orbit(horizontal: drag.translation.width, vertical: drag.translation.height)
-                camera.latitude = position.latitude
-                camera.longitude = position.longitude
+                if let sample = dragSample {
+                    let interval = drag.time.timeIntervalSince(sample.date)
+                    if interval > 0.002, interval < 0.14 {
+                        let x = (drag.translation.width - sample.translation.width) / interval
+                        let y = (drag.translation.height - sample.translation.height) / interval
+                        dragVelocity = CGSize(width: 0.24 * dragVelocity.width + 0.76 * x,
+                                              height: 0.24 * dragVelocity.height + 0.76 * y)
+                    } else {
+                        dragVelocity = .zero
+                    }
+                }
+                dragSample = (drag.translation, drag.time)
+                if let dragStart {
+                    camera = dragStart.orbit(horizontal: drag.translation.width, vertical: drag.translation.height)
+                }
             }
-            .onEnded { _ in
+            .onEnded { drag in
+                if dragStart != nil, let sample = dragSample, drag.time.timeIntervalSince(sample.date) < 0.11 {
+                    coast(with: dragVelocity)
+                }
                 dragStart = nil
+                dragSample = nil
+                dragVelocity = .zero
             }
     }
 
-    private var pinchGesture: some Gesture {
-        MagnificationGesture()
-            .onChanged { factor in
-                if pinchStart == nil {
-                    hoverTask?.cancel()
-                    pinchStart = camera.zoom
-                }
-                guard let pinchStart else { return }
-                let start = GlobeCamera(latitude: camera.latitude, longitude: camera.longitude, zoom: pinchStart)
-                camera = start.magnified(by: factor)
-            }
-            .onEnded { _ in
-                pinchStart = nil
-                if abs(camera.zoom - 1) < 0.05 {
-                    transition(to: camera.magnified(by: 1 / camera.zoom))
-                    feedback(.levelChange)
-                } else if camera.zoom == GlobeCamera.minimumZoom || camera.zoom == GlobeCamera.maximumZoom {
-                    feedback(.levelChange)
-                }
-            }
+    private func pinch(_ event: GlobePinch) {
+        if event.phase.contains(.cancelled) {
+            if let pinchStart { transition(to: pinchStart) }
+            pinchStart = nil
+            return
+        }
+        if event.phase.contains(.began) { pinchStart = nil }
+        magnify(event.scale, around: event.anchor, in: event.size)
+        if event.phase.contains(.ended) {
+            endMagnification(around: event.anchor, in: event.size)
+        }
+    }
+
+    private func magnify(_ factor: CGFloat, around point: CGPoint, in size: CGSize) {
+        if pinchStart == nil {
+            hoverTask?.cancel()
+            stopCameraMotion()
+            dragStart = nil
+            dragSample = nil
+            trackpadStart = nil
+            pinchStart = camera
+        }
+        if let pinchStart {
+            camera = pinchStart.magnified(by: factor, around: point, in: size, elastic: !reduceMotion)
+        }
+    }
+
+    private func endMagnification(around point: CGPoint, in size: CGSize) {
+        guard pinchStart != nil else { return }
+        pinchStart = nil
+
+        let zoom = camera.zoom
+        let target = abs(zoom - 1) < 0.045 ? 1 : min(GlobeCamera.maximumZoom, max(GlobeCamera.minimumZoom, zoom))
+        if abs(zoom - target) > 0.001 {
+            transition(to: camera.magnified(by: target / zoom, around: point, in: size))
+            feedback(.levelChange)
+        }
     }
 
     private func orbitWithTrackpad(_ motion: TrackpadMotion) {
-        guard metal != nil, !isChoosingCity else { return }
+        guard metal != nil, !isChoosingCity, pinchStart == nil else { return }
+
+        if motion.isMomentum {
+            guard acceptsMomentum, !reduceMotion else { return }
+            camera = camera.orbit(horizontal: -motion.travel.width, vertical: -motion.travel.height)
+            if motion.finished || motion.cancelled { acceptsMomentum = false }
+            return
+        }
+
         if motion.started {
             hoverTask?.cancel()
+            stopCameraMotion()
             trackpadStart = camera
         }
         guard let trackpadStart else { return }
@@ -294,7 +363,30 @@ struct DaylightMapView: View {
         } else {
             camera = trackpadStart.orbit(horizontal: -motion.travel.width, vertical: -motion.travel.height)
         }
-        if motion.finished || motion.cancelled { self.trackpadStart = nil }
+        if motion.finished || motion.cancelled {
+            self.trackpadStart = nil
+            acceptsMomentum = motion.finished && !motion.cancelled && hypot(motion.travel.width, motion.travel.height) > 8
+        }
+    }
+
+    private func hoverCityPicker(_ entered: Bool, fromButton: Bool) {
+        if fromButton {
+            overCityButton = entered
+        } else {
+            overCityList = entered
+        }
+
+        cityPickerHover?.cancel()
+        let show = overCityButton || overCityList
+        guard show != isChoosingCity else { return }
+
+        cityPickerHover = Task { @MainActor in
+            let delay: UInt64 = show ? 180_000_000 : 260_000_000
+            try? await Task.sleep(nanoseconds: delay)
+            guard !Task.isCancelled else { return }
+            isChoosingCity = show
+            if show { stopCameraMotion() } else { hoverTask?.cancel() }
+        }
     }
 
     private func preview(_ location: WorldClockLocation, hovering: Bool) {
@@ -314,15 +406,55 @@ struct DaylightMapView: View {
         if withFeedback { feedback(.alignment) }
     }
 
+    private func stopCameraMotion() {
+        cameraTask?.cancel()
+        cameraTask = nil
+        acceptsMomentum = false
+    }
+
     private func transition(to destination: GlobeCamera) {
-        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.40)) {
-            camera = destination
+        stopCameraMotion()
+        let start = camera
+        let landing = camera.nearestEquivalent(of: destination)
+        guard !reduceMotion else {
+            camera = landing
+            return
+        }
+        animate(for: 0.54) { time in
+            let spring = 12 * time
+            let progress = time >= 0.54 ? 1 : 1 - (1 + spring) * exp(-spring)
+            camera = start.interpolated(to: landing, progress: progress)
         }
     }
 
-    private func zoom(by factor: Double) {
+    private func coast(with velocity: CGSize) {
+        guard !reduceMotion else { return }
+        let speed = hypot(velocity.width, velocity.height)
+        guard speed > 50 else { return }
+        let scale = min(1, 820 / speed)
+        let start = camera
+        animate(for: 0.90) { time in
+            let distance = scale * (1 - exp(-5.5 * time)) / 5.5
+            camera = start.orbit(horizontal: velocity.width * distance, vertical: velocity.height * distance)
+        }
+    }
+
+    private func animate(for duration: TimeInterval, frame: @escaping (TimeInterval) -> Void) {
+        stopCameraMotion()
+        cameraTask = Task { @MainActor in
+            let start = ProcessInfo.processInfo.systemUptime
+            while !Task.isCancelled {
+                let elapsed = min(duration, ProcessInfo.processInfo.systemUptime - start)
+                frame(elapsed)
+                if elapsed >= duration { break }
+                try? await Task.sleep(nanoseconds: 16_000_000)
+            }
+        }
+    }
+
+    private func zoom(by factor: Double, around point: CGPoint? = nil, in size: CGSize = .zero) {
         hoverTask?.cancel()
-        let destination = camera.magnified(by: factor)
+        let destination = camera.magnified(by: factor, around: point, in: size)
         guard camera.zoom != destination.zoom else { return }
         transition(to: destination)
         feedback(.levelChange)
@@ -333,21 +465,15 @@ struct DaylightMapView: View {
     }
 }
 
-private struct GlobeScene: View, Animatable {
-    var camera: GlobeCamera
+private struct GlobeScene: View {
+    let camera: GlobeCamera
     let sun: SolarPosition
     let resources: GlobeMetalRenderer.Resources
     let selectedID: String?
     let select: (WorldClockLocation?) -> Void
 
-    var animatableData: AnimatablePair<Double, AnimatablePair<Double, Double>> {
-        get { AnimatablePair(camera.latitude, AnimatablePair(camera.longitude, camera.zoom)) }
-        set {
-            camera.latitude = newValue.first
-            camera.longitude = newValue.second.first
-            camera.zoom = newValue.second.second
-        }
-    }
+    let pinchInput: GlobePinchInput
+    let zoomIn: (CGPoint, CGSize) -> Void
 
     var body: some View {
         GeometryReader { geometry in
@@ -364,19 +490,34 @@ private struct GlobeScene: View, Animatable {
                         .zIndex(pin.id == selectedID ? 1 : 0)
                 }
             }
+            .background {
+                GlobePinchSurface(input: pinchInput)
+                    .allowsHitTesting(false)
+            }
             .contentShape(Rectangle())
-            .gesture(SpatialTapGesture().onEnded { tap in
-                func distance(_ pin: Pin) -> CGFloat {
-                    hypot(pin.point.x - tap.location.x, pin.point.y - tap.location.y)
-                }
-                if let pin = pins.min(by: { distance($0) < distance($1) }), distance(pin) <= 11 {
-                    select(pin.location)
-                } else {
-                    select(nil)
-                }
-            })
+            .gesture(taps(pins: pins, size: geometry.size))
             .accessibilityLabel("Interactive Earth globe with the current day and night boundary")
         }
+    }
+
+    private func taps(pins: [Pin], size: CGSize) -> some Gesture {
+        SpatialTapGesture(count: 2)
+            .exclusively(before: SpatialTapGesture())
+            .onEnded { tap in
+                switch tap {
+                case let .first(double):
+                    zoomIn(double.location, size)
+                case let .second(single):
+                    func distance(_ pin: Pin) -> CGFloat {
+                        hypot(pin.point.x - single.location.x, pin.point.y - single.location.y)
+                    }
+                    if let pin = pins.min(by: { distance($0) < distance($1) }), distance(pin) <= 11 {
+                        select(pin.location)
+                    } else {
+                        select(nil)
+                    }
+                }
+            }
     }
 
     private struct Pin: Identifiable {

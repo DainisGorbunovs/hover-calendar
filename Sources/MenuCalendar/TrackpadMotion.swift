@@ -4,10 +4,21 @@ struct TrackpadMotion {
     let phase: NSEvent.Phase
     let travel: CGSize
     let elapsed: TimeInterval
+    let isMomentum: Bool
 
     var started: Bool { phase.contains(.began) }
     var cancelled: Bool { phase.contains(.cancelled) }
     var finished: Bool { phase.contains(.ended) }
+
+    static func momentum(phase: NSEvent.Phase, deltaX: CGFloat, deltaY: CGFloat, isInverted: Bool) -> Self {
+        Self(phase: phase, travel: deviceTravel(deltaX, deltaY, isInverted: isInverted), elapsed: 0, isMomentum: true)
+    }
+
+    private static func deviceTravel(_ x: CGFloat, _ y: CGFloat, isInverted: Bool) -> CGSize {
+        // Positive deltas follow a physical swipe left or up under either scroll preference.
+        let sign: CGFloat = isInverted ? -1 : 1
+        return CGSize(width: sign * x, height: sign * y)
+    }
 
     struct Tracker {
         private var travel: CGSize = .zero
@@ -22,12 +33,12 @@ struct TrackpadMotion {
             guard let beganAt,
                   !phase.intersection([.began, .changed, .ended, .cancelled]).isEmpty else { return nil }
 
-            // Undo the scroll preference so positive deltas represent a physical swipe left or up.
-            let sign: CGFloat = isInverted ? -1 : 1
-            travel.width += sign * deltaX
-            travel.height += sign * deltaY
+            let change = TrackpadMotion.deviceTravel(deltaX, deltaY, isInverted: isInverted)
+            travel.width += change.width
+            travel.height += change.height
 
-            let motion = TrackpadMotion(phase: phase, travel: travel, elapsed: max(0, timestamp - beganAt))
+            let motion = TrackpadMotion(phase: phase, travel: travel,
+                                        elapsed: max(0, timestamp - beganAt), isMomentum: false)
             if motion.finished || motion.cancelled {
                 self.beganAt = nil
             }

@@ -7,16 +7,27 @@ struct GlobeCamera {
     var zoom: Double
 
     static let minimumZoom = 0.78
-    static let maximumZoom = 1.85
+    static let maximumZoom = 2.20
 
     static func overview(sun: SolarPosition) -> Self {
         Self(latitude: 19, longitude: sun.longitude - 68, zoom: 1)
     }
 
     func focused(on location: WorldClockLocation) -> Self {
-        let delta = (location.longitude - longitude) * .pi / 180
-        return Self(latitude: location.latitude, longitude: longitude + atan2(sin(delta), cos(delta)) * 180 / .pi,
-                    zoom: 1.48)
+        nearestEquivalent(of: Self(latitude: location.latitude, longitude: location.longitude, zoom: 1.48))
+    }
+
+    func nearestEquivalent(of destination: Self) -> Self {
+        let delta = (destination.longitude - longitude) * .pi / 180
+        var camera = destination
+        camera.longitude = longitude + atan2(sin(delta), cos(delta)) * 180 / .pi
+        return camera
+    }
+
+    func interpolated(to destination: Self, progress: Double) -> Self {
+        Self(latitude: latitude + (destination.latitude - latitude) * progress,
+             longitude: longitude + (destination.longitude - longitude) * progress,
+             zoom: zoom + (destination.zoom - zoom) * progress)
     }
 
     func orbit(horizontal: Double, vertical: Double) -> Self {
@@ -25,9 +36,43 @@ struct GlobeCamera {
                     longitude: longitude - horizontal * sensitivity, zoom: zoom)
     }
 
-    func magnified(by factor: Double) -> Self {
-        Self(latitude: latitude, longitude: longitude,
-             zoom: min(Self.maximumZoom, max(Self.minimumZoom, zoom * factor)))
+    func magnified(by factor: Double, around point: CGPoint? = nil, in size: CGSize = .zero,
+                   elastic: Bool = false) -> Self {
+        let requested = zoom * factor
+        let bounded = min(Self.maximumZoom, max(Self.minimumZoom, requested))
+        let overflow = requested - bounded
+        let target = bounded + (elastic ? 0.14 * overflow / (0.14 + abs(overflow)) : 0)
+        let centered = Self(latitude: latitude, longitude: longitude, zoom: target)
+        guard let point, size.width > 0, size.height > 0 else { return centered }
+
+        let radius = Self.radius(in: size, zoom: zoom)
+        let targetRadius = Self.radius(in: size, zoom: target)
+        let offset = CGPoint(x: point.x - size.width / 2, y: size.height / 2 - point.y)
+        let x = Double(offset.x / radius)
+        let y = Double(offset.y / radius)
+        let targetX = Double(offset.x / targetRadius)
+        let targetY = Double(offset.y / targetRadius)
+        guard x * x + y * y < 0.99, targetX * targetX + targetY * targetY < 0.99 else { return centered }
+
+        // Find the surface point beneath the pinch, then solve for the camera that keeps it there.
+        let radians = Double.pi / 180
+        let tilt = latitude * radians
+        let depth = sqrt(1 - x * x - y * y)
+        let meridian = cos(tilt) * depth - sin(tilt) * y
+        let north = sin(tilt) * depth + cos(tilt) * y
+        let horizontal = hypot(meridian, x)
+        guard horizontal > abs(targetX) else { return centered }
+
+        let principal = asin(targetX / horizontal)
+        let other = principal >= 0 ? .pi - principal : -.pi - principal
+        let original = atan2(x, meridian)
+        let relative = cos(principal - original) >= cos(other - original) ? principal : other
+        let targetDepth = sqrt(1 - targetX * targetX - targetY * targetY)
+        let targetTilt = atan2(north, horizontal * cos(relative)) - atan2(targetY, targetDepth)
+        let degrees = targetTilt / radians
+        guard (-82...82).contains(degrees) else { return centered }
+
+        return Self(latitude: degrees, longitude: longitude + (original - relative) / radians, zoom: target)
     }
 
     static func radius(in size: CGSize, zoom: Double) -> CGFloat {

@@ -21,6 +21,15 @@ struct WorldClockLocation: Identifiable {
         }
     }
 
+    static func orderedByLocalTime(at instant: Date) -> [Self] {
+        // For one instant, adding the UTC offset gives local civil date and time, including the day rollover.
+        locations.sorted { lhs, rhs in
+            let left = lhs.timeZone.secondsFromGMT(for: instant)
+            let right = rhs.timeZone.secondsFromGMT(for: instant)
+            return left == right ? lhs.name < rhs.name : left < right
+        }
+    }
+
     struct Reading {
         let time: String
         let zone: String
