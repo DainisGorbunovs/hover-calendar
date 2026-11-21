@@ -79,6 +79,8 @@ struct DaylightMapView: View {
                     if let city {
                         GlobeSolarBadge(city: city, instant: context.date).equatable()
                             .padding(5)
+                            .id(city.id)
+                            .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 3)))
                             .allowsHitTesting(false)
                     }
                 }
@@ -282,8 +284,19 @@ struct DaylightMapView: View {
     }
 
     private func focus(on location: WorldClockLocation, withFeedback: Bool) {
-        selected = location
-        if metal != nil { transition(to: camera.focused(on: location)) }
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.22)) {
+            selected = location
+        }
+        if metal != nil {
+            let target = camera.focused(on: location)
+            if reduceMotion {
+                stopCameraMotion()
+                camera = target
+            } else {
+                let flight = GlobeFlight(from: camera, to: target)
+                animate(for: flight.duration) { time in camera = flight.frame(at: time) }
+            }
+        }
         if withFeedback { feedback(.alignment) }
     }
 

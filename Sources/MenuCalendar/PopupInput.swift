@@ -97,6 +97,10 @@ final class PopupInput {
 
     var isPinching: Bool { source != nil }
 
+    func focusCalendarControls() {
+        panel?.makeKey()
+    }
+
     func scrollSurface(at point: NSPoint) -> ScrollSurface? {
         for (surface, view) in [(ScrollSurface.globe, viewport), (.calendar, calendarViewport)] {
             if let view, view.window === panel, view.bounds.contains(view.convert(point, from: nil)) {

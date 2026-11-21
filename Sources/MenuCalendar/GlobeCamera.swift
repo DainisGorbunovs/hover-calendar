@@ -8,7 +8,7 @@ struct GlobeCamera {
 
     static let minimumZoom = 0.78
     static let maximumZoom = 4.80
-    static let overviewZoom = 1.24
+    static let overviewZoom = 1.44
     static let cityZoom = 2.18
 
     static func overview(sun: SolarPosition) -> Self {

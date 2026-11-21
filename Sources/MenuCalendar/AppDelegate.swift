@@ -106,7 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.panel = panel
         anchor = frame
         candidate = nil
-        panel.orderFrontRegardless()
+        panel.reveal()
     }
 
     private func dismiss() {

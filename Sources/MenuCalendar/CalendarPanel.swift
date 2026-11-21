@@ -34,6 +34,19 @@ final class CalendarPanel: NSPanel {
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
     }
 
+    func reveal() {
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            orderFrontRegardless()
+            return
+        }
+        alphaValue = 0
+        orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.17
+            animator().alphaValue = 1
+        }
+    }
+
     func updateGlobePointer(_ point: CGPoint) {
         input.updatePointer(point)
     }
@@ -45,6 +58,14 @@ final class CalendarPanel: NSPanel {
 
     override func sendEvent(_ event: NSEvent) {
         if input.send(event) { return }
+        if event.type == .keyDown,
+           event.modifierFlags.contains(.command),
+           event.modifierFlags.isDisjoint(with: [.shift, .option, .control]),
+           event.charactersIgnoringModifiers?.lowercased() == "a",
+           let editor = firstResponder as? NSTextView, editor.isFieldEditor {
+            editor.selectAll(nil)
+            return
+        }
         guard event.type == .scrollWheel,
               event.hasPreciseScrollingDeltas,
               !event.phase.isEmpty || !event.momentumPhase.isEmpty else {

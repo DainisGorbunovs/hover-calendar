@@ -17,6 +17,9 @@ struct CalendarView: View {
     @State private var mapLocation: WorldClockLocation?
     @State private var cityFocus = PassthroughSubject<GlobeFocusRequest, Never>()
     @State private var hoveredDay: Date?
+    @State private var selectedDay: Date?
+    @State private var showingMonthChooser = false
+    @State private var calendarRevision = 0
     @State private var showingHolidayRegions = false
     @AppStorage("HolidayRegion") private var holidayRegion = HolidayRegion.localDefault
 
@@ -47,6 +50,24 @@ struct CalendarView: View {
                     PopupSurface(input: input, kind: .calendar)
                         .allowsHitTesting(false)
                 }
+                .overlay {
+                    if showingMonthChooser {
+                        Button(action: closeMonthChooser) {
+                            Rectangle().fill(palette.surface.opacity(0.78))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityHidden(true)
+                        .transition(.opacity)
+                    }
+                }
+                .overlay(alignment: .topLeading) {
+                    if showingMonthChooser {
+                        MonthChooser(calendar: calendar, palette: palette, visibleMonth: month(at: monthIndex).start,
+                                     choose: { jump(to: $0) }, close: closeMonthChooser)
+                            .padding(3)
+                            .transition(reduceMotion ? .identity : .scale(scale: 0.94, anchor: .topLeading).combined(with: .opacity))
+                    }
+                }
                 .overlay(alignment: .bottomTrailing) {
                     if showingHolidayRegions {
                         holidayRegions.padding(.bottom, 25)
@@ -69,12 +90,29 @@ struct CalendarView: View {
         let holidays = holidays(in: month)
         return VStack(spacing: 6) {
             HStack(spacing: 3) {
-                Text(month.title)
-                    .font(.system(size: 16, weight: .semibold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-                    .foregroundStyle(palette.text)
-                    .accessibilityAddTraits(.isHeader)
+                Button {
+                    hoveredDay = nil
+                    showingHolidayRegions = false
+                    input.focusCalendarControls()
+                    withAnimation(reduceMotion ? nil : .spring(response: 0.24, dampingFraction: 0.82)) {
+                        showingMonthChooser = true
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Text(month.title)
+                            .font(.system(size: 16, weight: .semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
+                            .foregroundStyle(palette.text)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(palette.secondary)
+                    }
+                    .frame(height: 25)
+                }
+                .buttonStyle(CalendarButtonStyle(palette: palette))
+                .accessibilityLabel("\(month.title), choose month and year")
+                .help("Jump to a month and year")
 
                 Spacer(minLength: 4)
 
@@ -91,6 +129,8 @@ struct CalendarView: View {
                 dates(in: visible, today: today, holidays: index == monthIndex ? holidays : self.holidays(in: visible))
                     .accessibilityHidden(index != monthIndex)
             }
+            .id(calendarRevision)
+            .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 4)))
 
             calendarFooter(in: month, today: today, holidays: holidays)
         }
@@ -104,9 +144,10 @@ struct CalendarView: View {
         let dates = month.weeks.flatMap { $0 }.filter {
             calendar.isDate($0, equalTo: month.start, toGranularity: .month) && !holidays.names(on: $0).isEmpty
         }
-        let holiday = hoveredDay == nil
+        let inspectedDay = hoveredDay ?? selectedDay
+        let holiday = inspectedDay == nil
             ? dates.first(where: { $0 >= calendar.startOfDay(for: today) }) ?? dates.first
-            : hoveredDay
+            : inspectedDay
         let year = holidays.calendar.component(.year, from: month.start)
 
         return HStack(spacing: 5) {
@@ -136,8 +177,8 @@ struct CalendarView: View {
                 .foregroundStyle(palette.holiday)
                 .accessibilityElement(children: .combine)
                 .help(label)
-            } else if let hoveredDay {
-                Text(hoveredDay, format: .dateTime.weekday(.abbreviated).month(.abbreviated).day())
+            } else if let inspectedDay {
+                Text(inspectedDay, format: .dateTime.weekday(.abbreviated).month(.abbreviated).day())
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(palette.secondary)
                     .lineLimit(1)
@@ -151,6 +192,7 @@ struct CalendarView: View {
             Spacer(minLength: 0)
 
             Button {
+                showingMonthChooser = false
                 showingHolidayRegions.toggle()
             } label: {
                 HStack(spacing: 3) {
@@ -263,53 +305,67 @@ struct CalendarView: View {
         let day = calendar.component(.day, from: date)
         let fullDate = date.formatted(.dateTime.weekday(.wide).day().month(.wide).year())
         let marked = !holidayNames.isEmpty
-        let hovered = hoveredDay == date && page == Double(monthIndex) && !showingHolidayRegions
+        let hovered = hoveredDay == date && page == Double(monthIndex) && !showingHolidayRegions && !showingMonthChooser
+        let selected = selectedDay == date
         let names = holidayNames.joined(separator: ", ")
         let dateLabel = isToday ? "Today, \(fullDate)" : fullDate
         let dayColor = isInMonth ? (isWeekend ? palette.weekendText : palette.text) : palette.adjacent
 
-        return Text(day, format: .number)
-            .font(.system(size: 12, weight: isToday || marked ? .semibold : .medium).monospacedDigit())
-            .foregroundStyle(isToday ? Color.white : dayColor)
-            .frame(width: 21, height: 21)
-            .background {
-                if isToday {
-                    Circle().fill(palette.accent)
-                } else if hovered {
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(palette.activeTab)
+        return Button {
+            if isInMonth {
+                withAnimation(reduceMotion ? nil : .spring(response: 0.22, dampingFraction: 0.72)) {
+                    selectedDay = date
                 }
+                NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+            } else {
+                jump(to: date, selecting: date)
             }
-            .overlay {
-                if hovered {
-                    RoundedRectangle(cornerRadius: isToday ? 11 : 6)
-                        .strokeBorder(marked ? palette.holiday.opacity(0.72) : palette.secondary.opacity(0.55),
-                                      lineWidth: 0.65)
-                        .allowsHitTesting(false)
+        } label: {
+            Text(day, format: .number)
+                .font(.system(size: 12, weight: isToday || marked ? .semibold : .medium).monospacedDigit())
+                .foregroundStyle(isToday ? Color.white : dayColor)
+                .frame(width: 21, height: 21)
+                .background {
+                    if isToday {
+                        Circle().fill(palette.accent)
+                    } else if hovered || selected {
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(palette.activeTab)
+                    }
                 }
-            }
-            .shadow(color: hovered ? .black.opacity(colorScheme == .dark ? 0.35 : 0.18) : .clear,
-                    radius: 2, y: 1)
-            .offset(y: hovered && !reduceMotion ? -1 : 0)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hovered)
-            .frame(width: dayColumnWidth, height: 24)
-            .overlay(alignment: .bottom) {
-                if marked {
-                    Circle().fill(palette.holiday)
-                        .frame(width: 3, height: 3)
-                        .allowsHitTesting(false)
+                .overlay {
+                    if hovered || selected {
+                        RoundedRectangle(cornerRadius: isToday ? 11 : 6)
+                            .strokeBorder(selected ? palette.accent : marked ? palette.holiday.opacity(0.72) : palette.secondary.opacity(0.55),
+                                          lineWidth: 0.65)
+                            .allowsHitTesting(false)
+                    }
                 }
-            }
-            .contentShape(Rectangle())
-            .onHover { over in
-                guard page == Double(monthIndex), !showingHolidayRegions else { return }
-                if over {
-                    hoveredDay = date
-                } else if hoveredDay == date {
-                    hoveredDay = nil
+                .shadow(color: hovered ? .black.opacity(colorScheme == .dark ? 0.35 : 0.18) : .clear,
+                        radius: 2, y: 1)
+                .offset(y: hovered && !reduceMotion ? -1 : 0)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hovered)
+                .frame(width: dayColumnWidth, height: 24)
+                .overlay(alignment: .bottom) {
+                    if marked {
+                        Circle().fill(palette.holiday)
+                            .frame(width: 3, height: 3)
+                            .allowsHitTesting(false)
+                    }
                 }
-            }
-            .accessibilityLabel(marked ? "\(dateLabel), \(names)" : dateLabel)
+                .contentShape(Rectangle())
+                .onHover { over in
+                    guard page == Double(monthIndex), !showingHolidayRegions, !showingMonthChooser else { return }
+                    if over {
+                        hoveredDay = date
+                    } else if hoveredDay == date {
+                        hoveredDay = nil
+                    }
+                }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(marked ? "\(dateLabel), \(names)" : dateLabel)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private func iconButton(_ symbol: String, label: String, help: String? = nil,
@@ -332,7 +388,7 @@ struct CalendarView: View {
     }
 
     private func pageWithTrackpad(_ motion: TrackpadMotion) {
-        guard !motion.isMomentum else { return }
+        guard !motion.isMomentum, !showingMonthChooser else { return }
         let displacement = monthSwipe.preview(motion, width: calendarWidth)
         if motion.finished || motion.cancelled {
             moveMonth(monthSwipe.monthChange(for: motion))
@@ -342,7 +398,10 @@ struct CalendarView: View {
     }
 
     private func moveMonth(_ amount: Int) {
-        if amount != 0 { hoveredDay = nil }
+        if amount != 0 {
+            hoveredDay = nil
+            selectedDay = nil
+        }
         monthIndex += amount
         withAnimation(reduceMotion ? nil : .spring(response: 0.26, dampingFraction: 0.88)) {
             page = Double(monthIndex)
@@ -352,16 +411,27 @@ struct CalendarView: View {
         }
     }
 
-    private func goToToday() {
-        let today = Date.now
-        if calendar.isDate(referenceDate, equalTo: today, toGranularity: .month) {
-            moveMonth(-monthIndex)
-        } else {
-            referenceDate = today
+    private func closeMonthChooser() {
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.14)) {
+            showingMonthChooser = false
+        }
+    }
+
+    private func jump(to date: Date, selecting selection: Date? = nil) {
+        hoveredDay = nil
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.24)) {
+            referenceDate = date
             monthIndex = 0
             page = 0
-            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+            selectedDay = selection
+            showingMonthChooser = false
+            calendarRevision += 1
         }
+        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+    }
+
+    private func goToToday() {
+        jump(to: .now)
     }
 }
 
