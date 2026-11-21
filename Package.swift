@@ -4,5 +4,5 @@ import PackageDescription
 let package = Package(
     name: "MenuCalendar",
     platforms: [.macOS(.v13)],
-    targets: [.executableTarget(name: "MenuCalendar")]
+    targets: [.executableTarget(name: "MenuCalendar", resources: [.copy("EarthTextures")])]
 )

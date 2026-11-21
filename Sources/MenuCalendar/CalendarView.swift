@@ -9,13 +9,14 @@ struct CalendarView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var pane: Pane = .calendar
     @State private var displayedMonth = Date.now
+    @State private var mapLocation = WorldClockLocation.locations.first
 
     private let calendar = Calendar.autoupdatingCurrent
     private let weekColumnWidth: CGFloat = 22
     private let dayColumnWidth: CGFloat = 36
 
     private enum Pane {
-        case calendar, worldClock
+        case calendar, worldClock, map
     }
 
     private var palette: CalendarPalette {
@@ -35,7 +36,12 @@ struct CalendarView: View {
                         monthView(month, today: context.date)
                     }
                 case .worldClock:
-                    WorldClockView(palette: palette)
+                    WorldClockView(palette: palette) { location in
+                        mapLocation = location
+                        pane = .map
+                    }
+                case .map:
+                    DaylightMapView(palette: palette, selected: $mapLocation)
                 }
             }
             .frame(height: 221, alignment: .top)
@@ -54,8 +60,9 @@ struct CalendarView: View {
     private var toolbar: some View {
         HStack(spacing: 6) {
             HStack(spacing: 2) {
-                tab("Calendar", symbol: "calendar", for: .calendar)
-                tab("World Clock", symbol: "globe", for: .worldClock)
+                tab("Calendar", symbol: "calendar", for: .calendar, help: "Swipe down from World Clock")
+                tab("World Clock", symbol: "clock", for: .worldClock, help: "Swipe up from Calendar")
+                tab("Map", symbol: "map", for: .map, help: "Swipe up from World Clock")
             }
             .padding(2)
             .background(palette.track, in: RoundedRectangle(cornerRadius: 8))
@@ -66,15 +73,16 @@ struct CalendarView: View {
         }
     }
 
-    private func tab(_ label: String, symbol: String, for destination: Pane) -> some View {
+    private func tab(_ label: String, symbol: String, for destination: Pane, help: String) -> some View {
         let isSelected = pane == destination
 
         return Button {
             pane = destination
         } label: {
             Label(label, systemImage: symbol)
-                .font(.system(size: 11, weight: .semibold))
+                .font(.system(size: 10, weight: .semibold))
                 .lineLimit(1)
+                .minimumScaleFactor(0.88)
                 .foregroundStyle(isSelected ? palette.text : palette.secondary)
                 .frame(maxWidth: .infinity)
                 .frame(height: 24)
@@ -86,8 +94,7 @@ struct CalendarView: View {
         }
         .buttonStyle(CalendarButtonStyle(palette: palette))
         .accessibilityAddTraits(isSelected ? .isSelected : [])
-        .help(destination == .calendar ? "Swipe down with two fingers for Calendar"
-                                      : "Swipe up with two fingers for World Clock")
+        .help(help)
     }
 
     private func monthView(_ month: MonthGrid, today: Date) -> some View {
@@ -223,6 +230,10 @@ struct CalendarView: View {
             moveMonth(-1)
         case (.calendar, .up):
             pane = .worldClock
+        case (.worldClock, .up):
+            pane = .map
+        case (.map, .down):
+            pane = .worldClock
         case (.worldClock, .down):
             pane = .calendar
         default:
@@ -238,7 +249,7 @@ struct CalendarView: View {
     }
 }
 
-private struct CalendarButtonStyle: ButtonStyle {
+struct CalendarButtonStyle: ButtonStyle {
     let palette: CalendarPalette
 
     func makeBody(configuration: Configuration) -> some View {

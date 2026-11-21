@@ -3,17 +3,22 @@ import Foundation
 struct WorldClockLocation: Identifiable {
     let name: String
     let timeZone: TimeZone
+    let flag: String
+    let latitude: Double
+    let longitude: Double
     var id: String { timeZone.identifier }
 
     static let locations = [
-        ("London", "Europe/London"),
-        ("New York", "America/New_York"),
-        ("Chicago", "America/Chicago"),
-        ("San Francisco", "America/Los_Angeles"),
-        ("Riga", "Europe/Riga"),
-        ("Taipei", "Asia/Taipei")
-    ].compactMap { name, identifier in
-        TimeZone(identifier: identifier).map { WorldClockLocation(name: name, timeZone: $0) }
+        ("London", "Europe/London", "🇬🇧", 51.5074, -0.1278),
+        ("New York", "America/New_York", "🇺🇸", 40.7128, -74.0060),
+        ("Chicago", "America/Chicago", "🇺🇸", 41.8781, -87.6298),
+        ("San Francisco", "America/Los_Angeles", "🇺🇸", 37.7749, -122.4194),
+        ("Riga", "Europe/Riga", "🇱🇻", 56.9496, 24.1052),
+        ("Taipei", "Asia/Taipei", "🇹🇼", 25.0330, 121.5654)
+    ].compactMap { name, identifier, flag, latitude, longitude in
+        TimeZone(identifier: identifier).map {
+            WorldClockLocation(name: name, timeZone: $0, flag: flag, latitude: latitude, longitude: longitude)
+        }
     }
 
     struct Reading {
