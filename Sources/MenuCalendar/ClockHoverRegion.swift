@@ -12,17 +12,25 @@ struct ClockHoverRegion {
     }
 
     func frame(at point: CGPoint) -> CGRect? {
-        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(point) }),
+        let screens = NSScreen.screens
+        guard let screen = screens.first(where: { $0.frame.contains(point) })
+                ?? screens.first(where: { Self.contains(point, in: $0.frame) }),
               width + rightInset <= screen.frame.width else { return nil }
 
         let menuBarHeight = screen.frame.maxY - screen.visibleFrame.maxY
-        guard menuBarHeight > 0, point.y >= screen.visibleFrame.maxY else { return nil }
+        guard menuBarHeight > 0 else { return nil }
 
-        // The system reports the menu bar's bounds. Fit the region to the clock layout in points.
-        let height = min(22, menuBarHeight)
+        // Keep the bottom of the clock target and include the padding above it.
+        let clockHeight = min(22, menuBarHeight)
+        let height = (menuBarHeight + clockHeight) / 2
         let frame = CGRect(x: screen.frame.maxX - rightInset - width,
-                           y: screen.frame.maxY - (menuBarHeight + height) / 2,
+                           y: screen.frame.maxY - height,
                            width: width, height: height)
-        return frame.contains(point) ? frame : nil
+        return Self.contains(point, in: frame) ? frame : nil
+    }
+
+    static func contains(_ point: CGPoint, in frame: CGRect) -> Bool {
+        // AppKit can report a pointer exactly at the display's top edge.
+        point.x >= frame.minX && point.x < frame.maxX && point.y >= frame.minY && point.y <= frame.maxY
     }
 }

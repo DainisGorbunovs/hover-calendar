@@ -55,7 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let point = NSEvent.mouseLocation
         if let anchor, let panel {
             panel.updateGlobePointer(point)
-            if anchor.contains(point) || panel.frame.contains(point) {
+            if ClockHoverRegion.contains(point, in: anchor) || panel.frame.contains(point) {
                 leftAt = nil
             } else if let leftAt {
                 if now - leftAt >= closeDelay { dismiss() }
@@ -66,7 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         if let blockedAnchor {
-            if blockedAnchor.contains(point) { return }
+            if ClockHoverRegion.contains(point, in: blockedAnchor) { return }
             self.blockedAnchor = nil
         }
         guard NSEvent.pressedMouseButtons == 0, let frame = clockRegion.frame(at: point) else {

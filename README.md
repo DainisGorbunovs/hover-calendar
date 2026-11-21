@@ -21,7 +21,7 @@ With `just` installed, run `just build` to build the app or `just run` to build 
 open ".build/Menu Calendar.app"
 ```
 
-Hover over the built-in date and time. Clicking the clock still opens Notification Center. Click the calendar’s **…** button and choose **Quit Menu Calendar** to exit.
+Hover over the built-in date and time or the space directly above it. Clicking the clock still opens Notification Center. Click the calendar’s **…** button and choose **Quit Menu Calendar** to exit.
 
 ## Trackpad gestures
 
