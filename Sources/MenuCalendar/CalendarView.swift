@@ -1,19 +1,25 @@
+import AppKit
 import Combine
 import SwiftUI
 
 struct CalendarView: View {
     let showOptions: () -> Void
-    let swipes: AnyPublisher<TrackpadSwipe.Direction, Never>
+    let swipes: AnyPublisher<TrackpadMotion, Never>
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var pane: Pane = .calendar
-    @State private var displayedMonth = Date.now
-    @State private var mapLocation = WorldClockLocation.locations.first
+    @State private var referenceDate = Date.now
+    @State private var monthIndex = 0
+    @State private var page = 0.0
+    @State private var monthSwipe = MonthSwipe()
+    @State private var mapLocation: WorldClockLocation?
 
     private let calendar = Calendar.autoupdatingCurrent
     private let weekColumnWidth: CGFloat = 22
     private let dayColumnWidth: CGFloat = 36
+
+    private var calendarWidth: CGFloat { weekColumnWidth + 7 * dayColumnWidth }
 
     private enum Pane {
         case calendar, worldClock, map
@@ -32,16 +38,15 @@ struct CalendarView: View {
                 switch pane {
                 case .calendar:
                     TimelineView(.everyMinute) { context in
-                        let month = MonthGrid(containing: displayedMonth, calendar: calendar)
-                        monthView(month, today: context.date)
+                        monthView(month(at: monthIndex), today: context.date)
                     }
                 case .worldClock:
                     WorldClockView(palette: palette) { location in
                         mapLocation = location
-                        pane = .map
+                        selectPane(.map)
                     }
                 case .map:
-                    DaylightMapView(palette: palette, selected: $mapLocation)
+                    DaylightMapView(palette: palette, selected: $mapLocation, swipes: swipes)
                 }
             }
             .frame(height: 221, alignment: .top)
@@ -50,7 +55,7 @@ struct CalendarView: View {
         .padding(12)
         .frame(width: 298)
         .background(palette.surface, in: shape)
-        .onReceive(swipes, perform: navigate)
+        .onReceive(swipes, perform: pageWithTrackpad)
         .overlay {
             shape.strokeBorder(palette.outline)
                 .allowsHitTesting(false)
@@ -60,9 +65,9 @@ struct CalendarView: View {
     private var toolbar: some View {
         HStack(spacing: 6) {
             HStack(spacing: 2) {
-                tab("Calendar", symbol: "calendar", for: .calendar, help: "Swipe down from World Clock")
-                tab("World Clock", symbol: "clock", for: .worldClock, help: "Swipe up from Calendar")
-                tab("Map", symbol: "map", for: .map, help: "Swipe up from World Clock")
+                tab("Calendar", symbol: "calendar", for: .calendar)
+                tab("World Clock", symbol: "clock", for: .worldClock)
+                tab("Globe", symbol: "globe.americas", for: .map)
             }
             .padding(2)
             .background(palette.track, in: RoundedRectangle(cornerRadius: 8))
@@ -73,11 +78,11 @@ struct CalendarView: View {
         }
     }
 
-    private func tab(_ label: String, symbol: String, for destination: Pane, help: String) -> some View {
+    private func tab(_ label: String, symbol: String, for destination: Pane) -> some View {
         let isSelected = pane == destination
 
         return Button {
-            pane = destination
+            selectPane(destination)
         } label: {
             Label(label, systemImage: symbol)
                 .font(.system(size: 10, weight: .semibold))
@@ -94,7 +99,7 @@ struct CalendarView: View {
         }
         .buttonStyle(CalendarButtonStyle(palette: palette))
         .accessibilityAddTraits(isSelected ? .isSelected : [])
-        .help(help)
+        .help(label)
     }
 
     private func monthView(_ month: MonthGrid, today: Date) -> some View {
@@ -117,11 +122,14 @@ struct CalendarView: View {
                 }
             }
 
-            dates(in: month, today: today)
+            MonthPageStrip(position: page, width: calendarWidth) { index in
+                dates(in: self.month(at: index), today: today)
+                    .accessibilityHidden(index != monthIndex)
+            }
 
             HStack {
                 Button {
-                    displayedMonth = .now
+                    goToToday()
                 } label: {
                     Text("Today")
                         .font(.system(size: 11, weight: .semibold))
@@ -222,30 +230,74 @@ struct CalendarView: View {
         .help(help ?? label)
     }
 
-    private func navigate(_ direction: TrackpadSwipe.Direction) {
-        switch (pane, direction) {
-        case (.calendar, .left):
-            moveMonth(1)
-        case (.calendar, .right):
-            moveMonth(-1)
-        case (.calendar, .up):
-            pane = .worldClock
-        case (.worldClock, .up):
-            pane = .map
-        case (.map, .down):
-            pane = .worldClock
-        case (.worldClock, .down):
-            pane = .calendar
-        default:
-            break
+    private func selectPane(_ destination: Pane) {
+        guard destination != pane else { return }
+        page = Double(monthIndex)
+        pane = destination
+        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+    }
+
+    private func month(at index: Int) -> MonthGrid {
+        let reference = calendar.dateInterval(of: .month, for: referenceDate)?.start ?? referenceDate
+        let date = calendar.date(byAdding: .month, value: index, to: reference) ?? reference
+        return MonthGrid(containing: date, calendar: calendar)
+    }
+
+    private func pageWithTrackpad(_ motion: TrackpadMotion) {
+        guard pane == .calendar else { return }
+        let displacement = monthSwipe.preview(motion, width: calendarWidth)
+        if motion.finished || motion.cancelled {
+            moveMonth(monthSwipe.monthChange(for: motion))
+        } else if !reduceMotion {
+            page = Double(monthIndex) + displacement
         }
     }
 
     private func moveMonth(_ amount: Int) {
-        if let start = calendar.dateInterval(of: .month, for: displayedMonth)?.start,
-           let nextMonth = calendar.date(byAdding: .month, value: amount, to: start) {
-            displayedMonth = nextMonth
+        monthIndex += amount
+        withAnimation(reduceMotion ? nil : .spring(response: 0.26, dampingFraction: 0.88)) {
+            page = Double(monthIndex)
         }
+        if amount != 0 {
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        }
+    }
+
+    private func goToToday() {
+        let today = Date.now
+        if calendar.isDate(referenceDate, equalTo: today, toGranularity: .month) {
+            moveMonth(-monthIndex)
+        } else {
+            referenceDate = today
+            monthIndex = 0
+            page = 0
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        }
+    }
+}
+
+private struct MonthPageStrip<Content: View>: View, Animatable {
+    var position: Double
+    let width: CGFloat
+    @ViewBuilder let content: (Int) -> Content
+
+    var animatableData: Double {
+        get { position }
+        set { position = newValue }
+    }
+
+    var body: some View {
+        let lower = Int(floor(position))
+        let fraction = position - Double(lower)
+        let visible = fraction < 0.0001 ? [lower] : [lower, lower + 1]
+
+        ZStack {
+            ForEach(visible, id: \.self) { index in
+                content(index).offset(x: (Double(index) - position) * width)
+            }
+        }
+        .frame(width: width)
+        .clipped()
     }
 }
 

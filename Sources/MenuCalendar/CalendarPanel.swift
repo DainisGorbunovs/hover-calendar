@@ -6,8 +6,8 @@ final class CalendarPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
-    private let swipes = PassthroughSubject<TrackpadSwipe.Direction, Never>()
-    private var swipe = TrackpadSwipe()
+    private let swipes = PassthroughSubject<TrackpadMotion, Never>()
+    private var tracker = TrackpadMotion.Tracker()
 
     init(showOptions: @escaping () -> Void) {
         let view = CalendarView(showOptions: showOptions, swipes: swipes.eraseToAnyPublisher())
@@ -37,11 +37,12 @@ final class CalendarPanel: NSPanel {
             return
         }
 
-        if let direction = swipe.update(phase: event.phase,
-                                        deltaX: event.scrollingDeltaX,
-                                        deltaY: event.scrollingDeltaY,
-                                        isInverted: event.isDirectionInvertedFromDevice) {
-            swipes.send(direction)
+        if let motion = tracker.update(phase: event.phase,
+                                       deltaX: event.scrollingDeltaX,
+                                       deltaY: event.scrollingDeltaY,
+                                       isInverted: event.isDirectionInvertedFromDevice,
+                                       timestamp: event.timestamp) {
+            swipes.send(motion)
         }
     }
 }

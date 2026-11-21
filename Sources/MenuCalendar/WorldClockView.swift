@@ -55,8 +55,8 @@ struct WorldClockView: View {
                         }
                     }
                     .accessibilityElement(children: .combine)
-                    .accessibilityHint("Shows this city on the daylight map")
-                    .help("Show \(location.name) on the map")
+                    .accessibilityHint("Shows this city on the globe")
+                    .help("Show \(location.name) on the globe")
                 }
             }
         }

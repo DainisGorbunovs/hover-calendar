@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var localMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        DaylightMapView.prepareGlobe()
         let timer = Timer(timeInterval: 0.09, target: self, selector: #selector(checkPointer),
                           userInfo: nil, repeats: true)
         timer.tolerance = 0.02

@@ -2,9 +2,9 @@
 
 Hover over the built-in macOS menu-bar date and time to see the month beneath it. The calendar stays open as you move into it, so you can browse other months with the arrows or return with **Today**. The grid highlights today and shades weekend columns. Week numbers, the first day of the week, and weekends follow your Mac’s calendar and regional settings.
 
-Switch to **World Clock** in the popup for London, New York, Chicago, San Francisco, Riga, and Taipei. The clocks refresh each minute and show 24-hour local time and UTC offsets, with time-zone abbreviations where available. A city’s date appears when it differs from yours. Click a city row to locate it on the **Map**, or switch directly to the map and choose a city.
+Switch to **World Clock** in the popup for London, New York, Chicago, San Francisco, Riga, and Taipei. The clocks refresh each minute and show 24-hour local time and UTC offsets, with time-zone abbreviations where available. A city’s date appears when it differs from yours. Click a city row to focus the **Globe**, or open the city picker over the globe and hover over a city name to rotate and zoom to it.
 
-The map updates every minute, using the Sun’s position to blend daytime imagery, twilight, and nighttime lights. It works offline with satellite composites from [NASA Blue Marble](https://svs.gsfc.nasa.gov/2915/) and [NASA Black Marble](https://science.nasa.gov/earth/earth-observatory/earth-at-night/maps/). The Sun’s position is calculated using [U.S. Naval Observatory solar coordinates](https://aa.usno.navy.mil/faq/sun_approx) and [sidereal time](https://aa.usno.navy.mil/faq/GAST).
+The 3D globe updates every minute, using the Sun’s position to light the terrain and atmosphere and blend in twilight and nighttime lights. It works offline with satellite composites from [NASA Blue Marble](https://svs.gsfc.nasa.gov/2915/) and [NASA Black Marble](https://science.nasa.gov/earth/earth-observatory/earth-at-night/maps/). The Sun’s position is calculated using [U.S. Naval Observatory solar coordinates](https://aa.usno.navy.mil/faq/sun_approx) and [sidereal time](https://aa.usno.navy.mil/faq/GAST).
 
 Imagery credits go to NASA Earth Observatory and Reto Stöckli (Blue Marble) and to Joshua Stevens using Suomi NPP VIIRS data from Miguel Román, NASA GSFC (Black Marble).
 
@@ -23,13 +23,11 @@ Hover over the built-in date and time. Clicking the clock still opens Notificati
 
 ## Trackpad gestures
 
-With the pointer over the popup, use a two-finger swipe.
+In **Calendar**, swipe horizontally with two fingers to pull the next or previous month into view. The page snaps into place when you commit the swipe. Use the tabs to switch views.
 
-- Swipe left for the next month or right for the previous month.
-- Swipe up from Calendar to open World Clock, then again to open Map.
-- Swipe down to return to World Clock, then to the same month in Calendar.
+In **Globe**, drag or use two fingers to orbit the Earth. Pinch to zoom, or use the zoom controls beside the globe. Open the city picker and hover over a name for a closer look, or click it to focus immediately. The reset button returns to the full-Earth view.
 
-The arrows and tabs also work by clicking.
+Supported Force Touch trackpads give a small tap when a month, tab, or city selection commits and when zoom snaps to its limits.
 
 ## Clock position
 
