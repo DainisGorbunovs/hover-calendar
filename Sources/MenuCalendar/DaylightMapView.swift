@@ -2,11 +2,19 @@ import AppKit
 import Combine
 import SwiftUI
 
+struct GlobeFocusRequest {
+    let city: WorldClockLocation
+    let tactile: Bool
+}
+
 struct DaylightMapView: View {
     let palette: CalendarPalette
     @Binding var selected: WorldClockLocation?
     let swipes: AnyPublisher<TrackpadMotion, Never>
-    let pinchInput: GlobePinchInput
+    let input: PopupInput
+
+    let focusRequests: AnyPublisher<GlobeFocusRequest, Never>
+    let showOptions: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var camera: GlobeCamera
@@ -17,15 +25,8 @@ struct DaylightMapView: View {
     @State private var dragVelocity: CGSize = .zero
     @State private var acceptsMomentum = false
     @State private var cameraTask: Task<Void, Never>?
-    @State private var hoverTask: Task<Void, Never>?
     @State private var metal: GlobeMetalRenderer.Resources?
     @State private var preparing = true
-    @State private var isChoosingCity = false
-    @State private var cityPickerHover: Task<Void, Never>?
-    @State private var overCityButton = false
-    @State private var overCityList = false
-
-    private let locations = WorldClockLocation.locations
 
     private struct Textures {
         let day: URL
@@ -55,11 +56,14 @@ struct DaylightMapView: View {
     private static let fallback = textures.flatMap { EarthMapRenderer(dayURL: $0.day, nightURL: $0.night) }
 
     init(palette: CalendarPalette, selected: Binding<WorldClockLocation?>,
-         swipes: AnyPublisher<TrackpadMotion, Never>, pinchInput: GlobePinchInput) {
+         swipes: AnyPublisher<TrackpadMotion, Never>, input: PopupInput,
+         focusRequests: AnyPublisher<GlobeFocusRequest, Never>, showOptions: @escaping () -> Void) {
         self.palette = palette
         _selected = selected
         self.swipes = swipes
-        self.pinchInput = pinchInput
+        self.input = input
+        self.focusRequests = focusRequests
+        self.showOptions = showOptions
 
         let overview = GlobeCamera.overview(sun: SolarPosition(at: .now))
         _camera = State(initialValue: selected.wrappedValue.map { overview.focused(on: $0) } ?? overview)
@@ -68,63 +72,45 @@ struct DaylightMapView: View {
     var body: some View {
         TimelineView(.everyMinute) { context in
             let sun = SolarPosition(at: context.date)
-            let active = selected ?? locations.first
-            scene(active: active, at: context.date, sun: sun)
-                .overlay(alignment: .bottom) {
-                    if let active {
-                        globeBar(for: active, at: context.date, sun: sun)
-                            .padding(6)
-                    }
-                }
+            let localCity = WorldClockLocation.locations.first { $0.id == TimeZone.autoupdatingCurrent.identifier }
+            let city = selected ?? localCity ?? WorldClockLocation.locations.first
+            scene(active: city, at: context.date, sun: sun)
                 .overlay(alignment: .bottomLeading) {
-                    if isChoosingCity {
-                        cityPicker(active)
-                            .onHover { hoverCityPicker($0, fromButton: false) }
-                            .padding(.leading, 6)
-                            .padding(.bottom, 33)
+                    if let city {
+                        GlobeSolarBadge(city: city, instant: context.date).equatable()
+                            .padding(5)
+                            .allowsHitTesting(false)
                     }
                 }
         }
         .task {
             metal = await Self.preparation.value
             preparing = false
+            if metal != nil, let selected {
+                camera = camera.focused(on: selected)
+            }
         }
         .onReceive(swipes, perform: orbitWithTrackpad)
-        .onReceive(pinchInput.events, perform: pinch)
-        .onDisappear {
-            hoverTask?.cancel()
-            cityPickerHover?.cancel()
-            stopCameraMotion()
+        .onReceive(input.events, perform: pinch)
+        .onReceive(focusRequests) { focusRequest in
+            guard focusRequest.tactile || (dragStart == nil && pinchStart == nil) else { return }
+            focus(on: focusRequest.city, withFeedback: focusRequest.tactile)
         }
+        .onDisappear { stopCameraMotion() }
     }
 
     private func scene(active: WorldClockLocation?, at date: Date, sun: SolarPosition) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 9)
+        let shape = RoundedRectangle(cornerRadius: 7)
 
         return ZStack(alignment: .topTrailing) {
             if let metal {
                 GlobeScene(
                     camera: camera, sun: sun, resources: metal, selectedID: active?.id,
-                    select: { location in
-                        isChoosingCity = false
-                        if let location { focus(on: location, withFeedback: true) }
-                    },
-                    pinchInput: pinchInput,
-                    zoomIn: { point, size in zoom(by: 1.34, around: point, in: size) }
+                    select: { location in focus(on: location, withFeedback: true) },
+                    input: input,
+                    zoomIn: { point, size in zoom(by: 1.52, around: point, in: size) }
                 )
                 .simultaneousGesture(orbitGesture)
-
-                VStack(spacing: 2) {
-                    globeControl("arrow.counterclockwise", label: "Reset globe view") {
-                        hoverTask?.cancel()
-                        transition(to: .overview(sun: sun))
-                        feedback(.alignment)
-                    }
-                    globeControl("plus", label: "Zoom in") { zoom(by: 1.18) }
-                    globeControl("minus", label: "Zoom out") { zoom(by: 1 / 1.18) }
-                }
-                .padding(6)
-                .zIndex(1)
             } else if preparing {
                 ProgressView()
                     .controlSize(.small)
@@ -135,7 +121,7 @@ struct DaylightMapView: View {
                     let mapHeight = geometry.size.width / 2
                     ZStack {
                         Image(decorative: image, scale: 2).resizable()
-                        ForEach(locations) { location in
+                        ForEach(WorldClockLocation.locations) { location in
                             GlobePin(selected: location.id == active?.id)
                                 .position(x: (location.longitude + 180) / 360 * geometry.size.width,
                                           y: (90 - location.latitude) / 180 * mapHeight)
@@ -154,8 +140,30 @@ struct DaylightMapView: View {
         }
         .frame(height: 221)
         .background(palette.track, in: shape)
+        .overlay(alignment: .topTrailing) {
+            VStack(spacing: 2) {
+                globeControl("ellipsis", label: "Options", action: showOptions)
+                if metal != nil {
+                    globeControl("arrow.counterclockwise", label: "Reset globe view") {
+                        selected = nil
+                        transition(to: .overview(sun: sun))
+                        feedback(.alignment)
+                    }
+                    globeControl("plus", label: "Zoom in") { zoom(by: 1.30) }
+                    globeControl("minus", label: "Zoom out") { zoom(by: 1 / 1.30) }
+                    Text("\(camera.zoom, specifier: "%.1f")×")
+                        .font(.system(size: 9, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(.white.opacity(0.86))
+                        .padding(.horizontal, 3)
+                        .frame(height: 16)
+                        .background(Color(white: 0.12).opacity(0.88), in: RoundedRectangle(cornerRadius: 4))
+                        .accessibilityLabel("Globe zoom \(camera.zoom, specifier: "%.1f") times")
+                }
+            }
+            .padding(5)
+        }
         .clipShape(shape)
-        .overlay { shape.strokeBorder(palette.outline).allowsHitTesting(false) }
+        .overlay { shape.strokeBorder(palette.outline, lineWidth: 0.75).allowsHitTesting(false) }
     }
 
     private func globeControl(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {
@@ -163,7 +171,7 @@ struct DaylightMapView: View {
             Image(systemName: symbol)
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(Color.white.opacity(0.9))
-                .frame(width: 23, height: 21)
+                .frame(width: 22, height: 19)
                 .background(Color(white: 0.16).opacity(0.88), in: RoundedRectangle(cornerRadius: 5))
                 .contentShape(Rectangle())
         }
@@ -172,107 +180,11 @@ struct DaylightMapView: View {
         .help(label)
     }
 
-    private func cityPicker(_ active: WorldClockLocation?) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            ForEach(locations) { location in
-                let isSelected = location.id == active?.id
-                Button {
-                    focus(on: location, withFeedback: true)
-                    isChoosingCity = false
-                } label: {
-                    HStack(spacing: 6) {
-                        Text(location.flag)
-                            .font(.system(size: 12))
-                            .accessibilityHidden(true)
-                        Text(location.name)
-                            .font(.system(size: 10, weight: isSelected ? .semibold : .medium))
-                        Spacer(minLength: 4)
-                    }
-                    .foregroundStyle(palette.text)
-                    .padding(.horizontal, 6)
-                    .frame(width: 115, height: 19)
-                    .background(
-                        isSelected ? palette.activeTab : Color.clear,
-                        in: RoundedRectangle(cornerRadius: 5)
-                    )
-                }
-                .buttonStyle(CalendarButtonStyle(palette: palette))
-                .onHover { entered in preview(location, hovering: entered) }
-                .accessibilityAddTraits(isSelected ? .isSelected : [])
-                .accessibilityHint("Focuses the globe on this city")
-            }
-        }
-        .padding(4)
-        .background(palette.surface, in: RoundedRectangle(cornerRadius: 8))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(palette.outline)
-                .allowsHitTesting(false)
-        }
-        .shadow(color: .black.opacity(0.32), radius: 8, y: 3)
-    }
-
-    private func globeBar(for location: WorldClockLocation, at date: Date, sun: SolarPosition) -> some View {
-        let reading = location.reading(at: date)
-        let elevation = sun.elevation(at: location)
-        let light: (label: String, symbol: String)
-        if elevation >= -0.833 {
-            light = ("Daylight", "sun.max.fill")
-        } else if elevation >= -6 {
-            light = ("Twilight", "sun.horizon.fill")
-        } else {
-            light = ("Night", "moon.stars.fill")
-        }
-
-        return HStack(spacing: 5) {
-            Button {
-                cityPickerHover?.cancel()
-                isChoosingCity.toggle()
-                stopCameraMotion()
-                if !isChoosingCity { hoverTask?.cancel() }
-            } label: {
-                HStack(spacing: 4) {
-                    Text(location.name).lineLimit(1)
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 7, weight: .semibold))
-                }
-                .font(.system(size: 10, weight: .semibold))
-                .padding(.horizontal, 7)
-                .frame(height: 23)
-                .background(Color(white: 0.17).opacity(0.88), in: RoundedRectangle(cornerRadius: 5))
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Choose a city, currently \(location.name)")
-            .help("Choose a city")
-            .onHover { hoverCityPicker($0, fromButton: true) }
-
-            Spacer(minLength: 0)
-
-            HStack(spacing: 5) {
-                Image(systemName: light.symbol)
-                    .help(light.label)
-                Text(reading.zone)
-                    .lineLimit(1)
-                Text(reading.time)
-                    .font(.system(size: 13, weight: .semibold).monospacedDigit())
-            }
-            .font(.system(size: 9, weight: .medium))
-            .padding(.horizontal, 6)
-            .frame(height: 23)
-            .background(Color(white: 0.15).opacity(0.88), in: RoundedRectangle(cornerRadius: 5))
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("\(location.name), \(light.label), \(reading.zone), \(reading.time)")
-        }
-        .foregroundStyle(.white)
-    }
-
     private var orbitGesture: some Gesture {
         DragGesture(minimumDistance: 3)
             .onChanged { drag in
                 guard pinchStart == nil else { return }
                 if dragStart == nil {
-                    hoverTask?.cancel()
                     stopCameraMotion()
                     dragStart = camera
                 }
@@ -317,7 +229,6 @@ struct DaylightMapView: View {
 
     private func magnify(_ factor: CGFloat, around point: CGPoint, in size: CGSize) {
         if pinchStart == nil {
-            hoverTask?.cancel()
             stopCameraMotion()
             dragStart = nil
             dragSample = nil
@@ -334,7 +245,9 @@ struct DaylightMapView: View {
         pinchStart = nil
 
         let zoom = camera.zoom
-        let target = abs(zoom - 1) < 0.045 ? 1 : min(GlobeCamera.maximumZoom, max(GlobeCamera.minimumZoom, zoom))
+        let overview = GlobeCamera.overviewZoom
+        let target = abs(zoom - overview) < 0.045
+            ? overview : min(GlobeCamera.maximumZoom, max(GlobeCamera.minimumZoom, zoom))
         if abs(zoom - target) > 0.001 {
             transition(to: camera.magnified(by: target / zoom, around: point, in: size))
             feedback(.levelChange)
@@ -342,7 +255,7 @@ struct DaylightMapView: View {
     }
 
     private func orbitWithTrackpad(_ motion: TrackpadMotion) {
-        guard metal != nil, !isChoosingCity, pinchStart == nil else { return }
+        guard metal != nil, pinchStart == nil else { return }
 
         if motion.isMomentum {
             guard acceptsMomentum, !reduceMotion else { return }
@@ -352,7 +265,6 @@ struct DaylightMapView: View {
         }
 
         if motion.started {
-            hoverTask?.cancel()
             stopCameraMotion()
             trackpadStart = camera
         }
@@ -369,38 +281,7 @@ struct DaylightMapView: View {
         }
     }
 
-    private func hoverCityPicker(_ entered: Bool, fromButton: Bool) {
-        if fromButton {
-            overCityButton = entered
-        } else {
-            overCityList = entered
-        }
-
-        cityPickerHover?.cancel()
-        let show = overCityButton || overCityList
-        guard show != isChoosingCity else { return }
-
-        cityPickerHover = Task { @MainActor in
-            let delay: UInt64 = show ? 180_000_000 : 260_000_000
-            try? await Task.sleep(nanoseconds: delay)
-            guard !Task.isCancelled else { return }
-            isChoosingCity = show
-            if show { stopCameraMotion() } else { hoverTask?.cancel() }
-        }
-    }
-
-    private func preview(_ location: WorldClockLocation, hovering: Bool) {
-        hoverTask?.cancel()
-        guard hovering else { return }
-        hoverTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 320_000_000)
-            guard !Task.isCancelled else { return }
-            focus(on: location, withFeedback: false)
-        }
-    }
-
     private func focus(on location: WorldClockLocation, withFeedback: Bool) {
-        hoverTask?.cancel()
         selected = location
         if metal != nil { transition(to: camera.focused(on: location)) }
         if withFeedback { feedback(.alignment) }
@@ -453,7 +334,6 @@ struct DaylightMapView: View {
     }
 
     private func zoom(by factor: Double, around point: CGPoint? = nil, in size: CGSize = .zero) {
-        hoverTask?.cancel()
         let destination = camera.magnified(by: factor, around: point, in: size)
         guard camera.zoom != destination.zoom else { return }
         transition(to: destination)
@@ -470,9 +350,9 @@ private struct GlobeScene: View {
     let sun: SolarPosition
     let resources: GlobeMetalRenderer.Resources
     let selectedID: String?
-    let select: (WorldClockLocation?) -> Void
+    let select: (WorldClockLocation) -> Void
 
-    let pinchInput: GlobePinchInput
+    let input: PopupInput
     let zoomIn: (CGPoint, CGSize) -> Void
 
     var body: some View {
@@ -491,7 +371,7 @@ private struct GlobeScene: View {
                 }
             }
             .background {
-                GlobePinchSurface(input: pinchInput)
+                PopupSurface(input: input, kind: .globe)
                     .allowsHitTesting(false)
             }
             .contentShape(Rectangle())
@@ -513,8 +393,6 @@ private struct GlobeScene: View {
                     }
                     if let pin = pins.min(by: { distance($0) < distance($1) }), distance(pin) <= 11 {
                         select(pin.location)
-                    } else {
-                        select(nil)
                     }
                 }
             }
@@ -530,17 +408,32 @@ private struct GlobeScene: View {
 private struct GlobePin: View {
     let selected: Bool
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var ripple = 1.0
+
     var body: some View {
         let gold = Color(red: 1, green: 0.74, blue: 0.35)
         ZStack {
             if selected {
-                Circle().fill(gold.opacity(0.26)).frame(width: 15, height: 15)
+                Circle().fill(gold.opacity(0.24)).frame(width: 15, height: 15)
+                Circle()
+                    .strokeBorder(gold.opacity(0.58 * (1 - ripple)), lineWidth: 1)
+                    .frame(width: 16, height: 16)
+                    .scaleEffect(1 + ripple * 0.75)
             }
             Circle()
                 .fill(selected ? gold : Color.white.opacity(0.95))
                 .overlay { Circle().strokeBorder(.black.opacity(0.55), lineWidth: 0.65) }
                 .frame(width: selected ? 7 : 5, height: selected ? 7 : 5)
         }
+        .onAppear { pulse() }
+        .onChange(of: selected) { _ in pulse() }
         .accessibilityHidden(true)
+    }
+
+    private func pulse() {
+        guard selected, !reduceMotion else { return }
+        ripple = 0
+        withAnimation(.easeOut(duration: 0.85)) { ripple = 1 }
     }
 }

@@ -4,19 +4,18 @@ import SwiftUI
 
 struct CalendarView: View {
     let showOptions: () -> Void
-    let swipes: AnyPublisher<TrackpadMotion, Never>
-    let globePinch: GlobePinchInput
+    let calendarSwipes: AnyPublisher<TrackpadMotion, Never>
+    let globeSwipes: AnyPublisher<TrackpadMotion, Never>
+    let input: PopupInput
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var pane: Pane = .calendar
     @State private var referenceDate = Date.now
     @State private var monthIndex = 0
     @State private var page = 0.0
     @State private var monthSwipe = MonthSwipe()
     @State private var mapLocation: WorldClockLocation?
-    @State private var tabHover: Task<Void, Never>?
-    @State private var hoveredTab: Pane?
+    @State private var cityFocus = PassthroughSubject<GlobeFocusRequest, Never>()
     @State private var hoveredDay: Date?
     @State private var showingHolidayRegions = false
     @AppStorage("HolidayRegion") private var holidayRegion = HolidayRegion.localDefault
@@ -27,107 +26,43 @@ struct CalendarView: View {
 
     private var calendarWidth: CGFloat { weekColumnWidth + 7 * dayColumnWidth }
 
-    private enum Pane {
-        case calendar, worldClock, map
-    }
-
     private var palette: CalendarPalette {
         colorScheme == .dark ? .dark : .light
     }
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 16)
+        let shape = RoundedRectangle(cornerRadius: 10)
 
-        VStack(spacing: 8) {
-            toolbar
-            Group {
-                switch pane {
-                case .calendar:
-                    TimelineView(.everyMinute) { context in
-                        monthView(month(at: monthIndex), today: context.date)
-                    }
-                case .worldClock:
-                    WorldClockView(palette: palette) { location in
-                        mapLocation = location
-                        selectPane(.map)
-                    }
-                case .map:
-                    DaylightMapView(palette: palette, selected: $mapLocation, swipes: swipes, pinchInput: globePinch)
+        VStack(spacing: 7) {
+            HStack(alignment: .top, spacing: 8) {
+                DaylightMapView(palette: palette, selected: $mapLocation, swipes: globeSwipes,
+                                input: input, focusRequests: cityFocus.eraseToAnyPublisher(), showOptions: showOptions)
+                    .frame(width: 270)
+
+                TimelineView(.everyMinute) { context in
+                    monthView(month(at: monthIndex), today: context.date)
                 }
-            }
-            .frame(height: 221, alignment: .top)
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: pane)
-        }
-        .padding(12)
-        .frame(width: 298)
-        .background(palette.surface, in: shape)
-        .onReceive(swipes, perform: pageWithTrackpad)
-        .onDisappear { tabHover?.cancel() }
-        .overlay(alignment: .bottomTrailing) {
-            if pane == .calendar, showingHolidayRegions {
-                holidayRegions
-                    .padding(.trailing, 12)
-                    .padding(.bottom, 35)
-            }
-        }
-        .overlay {
-            shape.strokeBorder(palette.outline)
-                .allowsHitTesting(false)
-        }
-    }
-
-    private var toolbar: some View {
-        HStack(spacing: 6) {
-            HStack(spacing: 2) {
-                tab("Calendar", symbol: "calendar", for: .calendar)
-                tab("World Clock", symbol: "clock", for: .worldClock)
-                tab("Globe", symbol: "globe.americas", for: .map)
-            }
-            .padding(2)
-            .background(palette.track, in: RoundedRectangle(cornerRadius: 8))
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("View")
-
-            iconButton("ellipsis", label: "Options", action: showOptions)
-        }
-    }
-
-    private func tab(_ label: String, symbol: String, for destination: Pane) -> some View {
-        let isSelected = pane == destination
-
-        return Button {
-            selectPane(destination)
-        } label: {
-            Label(label, systemImage: symbol)
-                .font(.system(size: 10, weight: .semibold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.88)
-                .foregroundStyle(isSelected ? palette.text : palette.secondary)
-                .frame(maxWidth: .infinity)
-                .frame(height: 24)
+                .frame(width: calendarWidth, height: 221, alignment: .top)
                 .background {
-                    if isSelected {
-                        RoundedRectangle(cornerRadius: 6).fill(palette.activeTab)
+                    PopupSurface(input: input, kind: .calendar)
+                        .allowsHitTesting(false)
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    if showingHolidayRegions {
+                        holidayRegions.padding(.bottom, 25)
                     }
                 }
-        }
-        .buttonStyle(CalendarButtonStyle(palette: palette))
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
-        .onHover { inside in
-            if inside {
-                hoveredTab = destination
-                tabHover?.cancel()
-                guard !isSelected else { return }
-                tabHover = Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 270_000_000)
-                    guard !Task.isCancelled, hoveredTab == destination else { return }
-                    selectPane(destination, withFeedback: false)
-                }
-            } else if hoveredTab == destination {
-                hoveredTab = nil
-                tabHover?.cancel()
+            }
+
+            WorldClockView(palette: palette, selectedCity: mapLocation?.id) { location, tactile in
+                cityFocus.send(GlobeFocusRequest(city: location, tactile: tactile))
             }
         }
+        .padding(7)
+        .frame(width: 566)
+        .background(palette.surface, in: shape)
+        .overlay { shape.strokeBorder(palette.outline, lineWidth: 0.75).allowsHitTesting(false) }
+        .onReceive(calendarSwipes, perform: pageWithTrackpad)
     }
 
     private func monthView(_ month: MonthGrid, today: Date) -> some View {
@@ -390,19 +325,6 @@ struct CalendarView: View {
         .help(help ?? label)
     }
 
-    private func selectPane(_ destination: Pane, withFeedback: Bool = true) {
-        tabHover?.cancel()
-        guard destination != pane else { return }
-        page = Double(monthIndex)
-        showingHolidayRegions = false
-        hoveredDay = nil
-        pane = destination
-        globePinch.setActive(destination == .map)
-        if withFeedback {
-            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
-        }
-    }
-
     private func month(at index: Int) -> MonthGrid {
         let reference = calendar.dateInterval(of: .month, for: referenceDate)?.start ?? referenceDate
         let date = calendar.date(byAdding: .month, value: index, to: reference) ?? reference
@@ -410,7 +332,7 @@ struct CalendarView: View {
     }
 
     private func pageWithTrackpad(_ motion: TrackpadMotion) {
-        guard pane == .calendar, !motion.isMomentum else { return }
+        guard !motion.isMomentum else { return }
         let displacement = monthSwipe.preview(motion, width: calendarWidth)
         if motion.finished || motion.cancelled {
             moveMonth(monthSwipe.monthChange(for: motion))
@@ -470,14 +392,16 @@ private struct MonthPageStrip<Content: View>: View, Animatable {
 
 struct CalendarButtonStyle: ButtonStyle {
     let palette: CalendarPalette
+    var hover: ((Bool) -> Void)? = nil
 
     func makeBody(configuration: Configuration) -> some View {
-        ButtonContent(configuration: configuration, palette: palette)
+        ButtonContent(configuration: configuration, palette: palette, hover: hover)
     }
 
     private struct ButtonContent: View {
         let configuration: ButtonStyle.Configuration
         let palette: CalendarPalette
+        let hover: ((Bool) -> Void)?
         @State private var isHovered = false
 
         var body: some View {
@@ -487,7 +411,10 @@ struct CalendarButtonStyle: ButtonStyle {
                         .fill(configuration.isPressed || isHovered ? palette.outline : Color.clear)
                 }
                 .contentShape(Rectangle())
-                .onHover { isHovered = $0 }
+                .onHover { inside in
+                    isHovered = inside
+                    hover?(inside)
+                }
         }
     }
 }

@@ -1,6 +1,9 @@
 import Foundation
 
 struct SolarPosition {
+    // Apparent upper limb at the horizon, including standard refraction.
+    static let sunriseElevation = -50.0 / 60.0
+
     let latitude: Double
     let longitude: Double
 

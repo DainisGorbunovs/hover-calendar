@@ -19,10 +19,10 @@ final class EarthMapRenderer {
 
     init?(dayURL: URL, nightURL: URL) {
         guard let dayImage = Self.loadImage(at: dayURL), let nightImage = Self.loadImage(at: nightURL),
-              dayImage.width == nightImage.width, dayImage.height == nightImage.height,
-              dayImage.width == dayImage.height * 2 else { return nil }
+              dayImage.width == dayImage.height * 2,
+              nightImage.width == nightImage.height * 2 else { return nil }
 
-        let columns = min(dayImage.width, 720)
+        let columns = min(dayImage.width, nightImage.width, 720)
         let rows = columns / 2
         guard let day = Self.pixels(in: dayImage, width: columns, height: rows),
               let night = Self.pixels(in: nightImage, width: columns, height: rows) else { return nil }

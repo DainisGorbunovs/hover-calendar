@@ -77,16 +77,19 @@ struct IndirectPinch {
 }
 
 @MainActor
-final class GlobePinchInput {
+final class PopupInput {
+    enum ScrollSurface { case calendar, globe }
+
     weak var panel: NSPanel?
     weak var viewport: NSView?
+    weak var calendarViewport: NSView?
     let events = PassthroughSubject<GlobePinch, Never>()
 
     private enum Source { case native, contacts }
     private var source: Source?
     private var tracker = GlobePinch.Tracker()
     private var indirect = IndirectPinch()
-    private var active = false
+    private var active = true
     private var overCanvas = false
     private var previousApp: NSRunningApplication?
     private var restoreTask: Task<Void, Never>?
@@ -94,10 +97,13 @@ final class GlobePinchInput {
 
     var isPinching: Bool { source != nil }
 
-    func setActive(_ active: Bool) {
-        guard self.active != active else { return }
-        self.active = active
-        if !active { leaveCanvas() }
+    func scrollSurface(at point: NSPoint) -> ScrollSurface? {
+        for (surface, view) in [(ScrollSurface.globe, viewport), (.calendar, calendarViewport)] {
+            if let view, view.window === panel, view.bounds.contains(view.convert(point, from: nil)) {
+                return surface
+            }
+        }
+        return nil
     }
 
     func updatePointer(_ screenPoint: CGPoint) {
@@ -228,17 +234,25 @@ final class GlobePinchInput {
     }
 }
 
-struct GlobePinchSurface: NSViewRepresentable {
-    let input: GlobePinchInput
+struct PopupSurface: NSViewRepresentable {
+    let input: PopupInput
+    let kind: PopupInput.ScrollSurface
 
     func makeNSView(context: Context) -> NSView {
         let view = Viewport()
-        input.viewport = view
+        register(view)
         return view
     }
 
     func updateNSView(_ view: NSView, context: Context) {
-        input.viewport = view
+        register(view)
+    }
+
+    private func register(_ view: NSView) {
+        switch kind {
+        case .calendar: input.calendarViewport = view
+        case .globe: input.viewport = view
+        }
     }
 
     private final class Viewport: NSView {

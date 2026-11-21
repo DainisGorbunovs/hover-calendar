@@ -42,10 +42,6 @@ struct WorldClockLocation: Identifiable {
         var cityCalendar = localCalendar
         cityCalendar.timeZone = timeZone
 
-        let clockFormat = Date.VerbatimFormatStyle(
-            format: "\(hour: .twoDigits(clock: .twentyFourHour, hourCycle: .zeroBased)):\(minute: .twoDigits)",
-            locale: .autoupdatingCurrent, timeZone: timeZone, calendar: cityCalendar
-        )
         let dateComponents: Set<Calendar.Component> = [.year, .month, .day]
         let sameDay = localCalendar.dateComponents(dateComponents, from: date)
             == cityCalendar.dateComponents(dateComponents, from: date)
@@ -58,9 +54,19 @@ struct WorldClockLocation: Identifiable {
         let utcOffset = "UTC\(offset < 0 ? "−" : "+")\(magnitude / 60)\(minutePart)"
         let abbreviation = abbreviation(at: date, offset: offset)
 
-        return Reading(time: date.formatted(clockFormat),
+        return Reading(time: localTime(at: date),
                        zone: abbreviation.map { "\($0) · \(utcOffset)" } ?? utcOffset,
                        differentDay: sameDay ? nil : date.formatted(dayFormat))
+    }
+
+    func localTime(at date: Date) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        let clockFormat = Date.VerbatimFormatStyle(
+            format: "\(hour: .twoDigits(clock: .twentyFourHour, hourCycle: .zeroBased)):\(minute: .twoDigits)",
+            locale: .autoupdatingCurrent, timeZone: timeZone, calendar: calendar
+        )
+        return date.formatted(clockFormat)
     }
 
     private func abbreviation(at date: Date, offset: Int) -> String? {

@@ -7,14 +7,16 @@ struct GlobeCamera {
     var zoom: Double
 
     static let minimumZoom = 0.78
-    static let maximumZoom = 2.20
+    static let maximumZoom = 4.80
+    static let overviewZoom = 1.24
+    static let cityZoom = 2.18
 
     static func overview(sun: SolarPosition) -> Self {
-        Self(latitude: 19, longitude: sun.longitude - 68, zoom: 1)
+        Self(latitude: 19, longitude: sun.longitude - 68, zoom: overviewZoom)
     }
 
     func focused(on location: WorldClockLocation) -> Self {
-        nearestEquivalent(of: Self(latitude: location.latitude, longitude: location.longitude, zoom: 1.48))
+        nearestEquivalent(of: Self(latitude: location.latitude, longitude: location.longitude, zoom: Self.cityZoom))
     }
 
     func nearestEquivalent(of destination: Self) -> Self {

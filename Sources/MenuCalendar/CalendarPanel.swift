@@ -6,18 +6,22 @@ final class CalendarPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
-    private let swipes = PassthroughSubject<TrackpadMotion, Never>()
+    private let calendarSwipes = PassthroughSubject<TrackpadMotion, Never>()
+    private let globeSwipes = PassthroughSubject<TrackpadMotion, Never>()
+    private var scrollSurface: PopupInput.ScrollSurface?
+    private var globeMomentum = false
     private var tracker = TrackpadMotion.Tracker()
-    private let globePinch = GlobePinchInput()
+    private let input = PopupInput()
 
     init(showOptions: @escaping () -> Void) {
-        let view = CalendarView(showOptions: showOptions, swipes: swipes.eraseToAnyPublisher(), globePinch: globePinch)
+        let view = CalendarView(showOptions: showOptions, calendarSwipes: calendarSwipes.eraseToAnyPublisher(),
+                                globeSwipes: globeSwipes.eraseToAnyPublisher(), input: input)
         let hosting = CalendarHostingView(rootView: view)
         let bounds = CGRect(origin: .zero, size: hosting.fittingSize)
         super.init(contentRect: bounds, styleMask: [.borderless, .nonactivatingPanel],
                    backing: .buffered, defer: false)
 
-        globePinch.panel = self
+        input.panel = self
         hosting.frame = bounds
         hosting.autoresizingMask = [.width, .height]
         contentView = hosting
@@ -31,16 +35,16 @@ final class CalendarPanel: NSPanel {
     }
 
     func updateGlobePointer(_ point: CGPoint) {
-        globePinch.updatePointer(point)
+        input.updatePointer(point)
     }
 
     func closePopup() {
-        globePinch.close()
+        input.close()
         orderOut(nil)
     }
 
     override func sendEvent(_ event: NSEvent) {
-        if globePinch.send(event) { return }
+        if input.send(event) { return }
         guard event.type == .scrollWheel,
               event.hasPreciseScrollingDeltas,
               !event.phase.isEmpty || !event.momentumPhase.isEmpty else {
@@ -48,25 +52,48 @@ final class CalendarPanel: NSPanel {
             return
         }
 
-        if globePinch.isPinching { return }
+        if input.isPinching {
+            globeMomentum = false
+            return
+        }
         if !event.momentumPhase.isEmpty {
-            swipes.send(.momentum(phase: event.momentumPhase, deltaX: event.scrollingDeltaX,
-                                  deltaY: event.scrollingDeltaY, isInverted: event.isDirectionInvertedFromDevice))
-        } else if let motion = tracker.update(phase: event.phase,
-                                       deltaX: event.scrollingDeltaX,
+            guard globeMomentum else { return }
+            globeSwipes.send(.momentum(phase: event.momentumPhase, deltaX: event.scrollingDeltaX,
+                                       deltaY: event.scrollingDeltaY, isInverted: event.isDirectionInvertedFromDevice))
+            if event.momentumPhase.contains(.ended) || event.momentumPhase.contains(.cancelled) {
+                globeMomentum = false
+            }
+            return
+        }
+
+        if event.phase.contains(.began) {
+            scrollSurface = input.scrollSurface(at: event.locationInWindow)
+            globeMomentum = false
+        }
+        guard let scrollSurface else {
+            super.sendEvent(event)
+            return
+        }
+        if let motion = tracker.update(phase: event.phase, deltaX: event.scrollingDeltaX,
                                        deltaY: event.scrollingDeltaY,
-                                       isInverted: event.isDirectionInvertedFromDevice,
-                                       timestamp: event.timestamp) {
-            swipes.send(motion)
+                                       isInverted: event.isDirectionInvertedFromDevice, timestamp: event.timestamp) {
+            switch scrollSurface {
+            case .calendar: calendarSwipes.send(motion)
+            case .globe: globeSwipes.send(motion)
+            }
+            if motion.finished || motion.cancelled {
+                globeMomentum = scrollSurface == .globe && motion.finished && !motion.cancelled
+                self.scrollSurface = nil
+            }
         }
     }
 }
 
 private final class CalendarHostingView: NSHostingView<CalendarView> {
-    private let globePinch: GlobePinchInput
+    private let input: PopupInput
 
     required init(rootView: CalendarView) {
-        globePinch = rootView.globePinch
+        input = rootView.input
         super.init(rootView: rootView)
         allowedTouchTypes = [.indirect]
     }
@@ -76,18 +103,18 @@ private final class CalendarHostingView: NSHostingView<CalendarView> {
     }
 
     override func touchesBegan(with event: NSEvent) {
-        if !globePinch.observeTouches(event, in: self) { super.touchesBegan(with: event) }
+        if !input.observeTouches(event, in: self) { super.touchesBegan(with: event) }
     }
 
     override func touchesMoved(with event: NSEvent) {
-        if !globePinch.observeTouches(event, in: self) { super.touchesMoved(with: event) }
+        if !input.observeTouches(event, in: self) { super.touchesMoved(with: event) }
     }
 
     override func touchesEnded(with event: NSEvent) {
-        if !globePinch.observeTouches(event, in: self) { super.touchesEnded(with: event) }
+        if !input.observeTouches(event, in: self) { super.touchesEnded(with: event) }
     }
 
     override func touchesCancelled(with event: NSEvent) {
-        if !globePinch.observeTouches(event, in: self, cancelled: true) { super.touchesCancelled(with: event) }
+        if !input.observeTouches(event, in: self, cancelled: true) { super.touchesCancelled(with: event) }
     }
 }

@@ -48,7 +48,7 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
                 descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm_srgb
                 let loader = MTKTextureLoader(device: device)
                 let options: [MTKTextureLoader.Option: Any] = [
-                    .origin: MTKTextureLoader.Origin.topLeft, .SRGB: true
+                    .origin: MTKTextureLoader.Origin.topLeft, .SRGB: true, .generateMipmaps: true
                 ]
                 self.device = device
                 self.queue = queue
@@ -56,7 +56,7 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
                 day = try loader.newTexture(URL: dayURL, options: options)
                 night = try loader.newTexture(URL: nightURL, options: options)
                 clouds = try loader.newTexture(URL: cloudURL, options: [
-                    .origin: MTKTextureLoader.Origin.topLeft, .SRGB: false
+                    .origin: MTKTextureLoader.Origin.topLeft, .SRGB: false, .generateMipmaps: true
                 ])
             } catch {
                 NSLog("Menu Calendar globe: %@", String(describing: error))
@@ -99,7 +99,7 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
             east: [-sin(lon), cos(lon), 0, 0],
             north: [-sin(lat) * cos(lon), -sin(lat) * sin(lon), cos(lat), 0],
             sun: [cos(solarLat) * cos(solarLon), cos(solarLat) * sin(solarLon), sin(solarLat), 0],
-            viewport: [Float(view.drawableSize.width) / diameter, Float(view.drawableSize.height) / diameter, 0, 0]
+            viewport: [Float(view.drawableSize.width) / diameter, Float(view.drawableSize.height) / diameter, .pi * diameter, 0]
         )
 
         encoder.setRenderPipelineState(resources.pipeline)
@@ -143,7 +143,7 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
                                   texture2d<float> night [[texture(1)]],
                                   texture2d<float> clouds [[texture(2)]]) {
         constexpr sampler imagery(s_address::repeat, t_address::clamp_to_edge,
-                                   min_filter::linear, mag_filter::linear);
+                                   min_filter::linear, mag_filter::linear, mip_filter::linear);
         const float cloudRadius = 1.009;
         const float3 sky = float3(0.003, 0.005, 0.013);
         float2 disk = input.screen * globe.viewport.xy;
@@ -163,8 +163,13 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
         float3 normal = normalize(globe.front.xyz * depth + globe.east.xyz * disk.x + globe.north.xyz * disk.y);
         float2 uv = earthUV(normal);
         float incidence = dot(normal, globe.sun.xyz);
-        float3 terrain = day.sample(imagery, uv, level(0)).rgb;
-        float3 lights = night.sample(imagery, uv, level(0)).rgb;
+        // Set the mip level explicitly so the date-line wrap does not create a false seam.
+        float footprint = 1.0 / max(globe.viewport.z * max(depth, 0.24), 1.0);
+        float terrainLevel = max(0.0, log2(float(day.get_width()) * footprint));
+        float lightLevel = max(0.0, log2(float(night.get_width()) * footprint));
+        float cloudLevel = max(0.0, log2(float(clouds.get_width()) * footprint));
+        float3 terrain = day.sample(imagery, uv, level(terrainLevel)).rgb;
+        float3 lights = night.sample(imagery, uv, level(lightLevel)).rgb;
         float daylight = smoothstep(-0.105, 0.055, incidence);
         float twilight = 4.0 * daylight * (1.0 - daylight);
         float irradiance = 0.25 + 0.75 * sqrt(saturate(incidence));
@@ -172,7 +177,7 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
         // Follow the actual light ray up to the cloud shell to cast a separate shadow on the terrain.
         float lightDistance = sqrt(incidence * incidence + cloudRadius * cloudRadius - 1.0) - incidence;
         float3 shadowDirection = normalize(normal + globe.sun.xyz * lightDistance);
-        float shadowCover = smoothstep(0.26, 0.90, clouds.sample(imagery, earthUV(shadowDirection), level(0)).r);
+        float shadowCover = smoothstep(0.26, 0.90, clouds.sample(imagery, earthUV(shadowDirection), level(cloudLevel)).r);
         float cloudShadow = shadowCover * smoothstep(0.0, 0.20, incidence) * 0.33;
         float3 sunlit = (terrain * irradiance + float3(0.002, 0.010, 0.034) * irradiance) * (1.0 - cloudShadow);
 
@@ -194,7 +199,7 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
         float3 cloudNormal = normalize(globe.front.xyz * cloudDepth + globe.east.xyz * disk.x + globe.north.xyz * disk.y);
         float cloudSun = dot(cloudNormal, globe.sun.xyz);
         float cloudLight = smoothstep(-0.115, 0.10, cloudSun);
-        float mask = clouds.sample(imagery, earthUV(cloudNormal), level(0)).r;
+        float mask = clouds.sample(imagery, earthUV(cloudNormal), level(cloudLevel)).r;
         float coverage = smoothstep(0.22, 0.88, mask) * (0.64 + air * 0.13);
         float3 cloudColor = mix(float3(0.013, 0.022, 0.046),
                                 float3(0.88, 0.94, 1.04) * (0.33 + 0.67 * sqrt(saturate(cloudSun))),

@@ -1,10 +1,10 @@
 # Menu Calendar
 
-Hover over the built-in macOS menu-bar date and time to see the month beneath it. The calendar stays open as you move into it, so you can browse other months with the arrows or return with **Today**. The grid highlights today, shades weekend columns, and marks public holidays with a teal dot. Hover over a date for a raised highlight and its date or holiday name. The calendar shows the next holiday in the month when available. Week numbers, the first day of the week, and weekends follow your Mac’s calendar and regional settings.
+Hover over the built-in macOS menu-bar date and time to see the calendar, daylight globe, and six world clocks together. The calendar stays open as you move into it, so you can browse other months with the arrows or return with **Today**. The grid highlights today, shades weekend columns, and marks public holidays with a teal dot. Hover over a date for a raised highlight and its date or holiday name. The calendar shows the next holiday in the month when available. Week numbers, the first day of the week, and weekends follow your Mac’s calendar and regional settings.
 
-Switch to **World Clock** in the popup for London, New York, Chicago, San Francisco, Riga, and Taipei. The clocks run from earliest to latest local date and time and refresh each minute and show 24-hour local time and UTC offsets, with time-zone abbreviations where available. A city’s date appears when it differs from yours. Click a city row to focus the **Globe**, or open the city picker over the globe and hover over a city name to rotate and zoom to it.
+The world-clock strip shows London, New York, Chicago, San Francisco, Riga, and Taipei. The clocks run from earliest to latest local date and time and refresh each minute and show 24-hour local time and UTC offsets, with time-zone abbreviations where available. A city’s date appears when it differs from yours. Pause over a city in the strip to rotate and zoom to it. The daylight strip shows local sunrise, sunset, and the city’s position in its day. Clicking a city focuses it immediately.
 
-The globe updates its solar lighting every minute. It renders terrain, ocean reflections, cloud shadows, twilight, and city lights. The cloud layer uses a [NASA satellite composite](https://science.nasa.gov/earth/earth-observatory/the-blue-marble-true-color-global-imagery-at-1km-resolution/) with lighting calculated for the current time. It works offline with satellite composites from [NASA Blue Marble](https://svs.gsfc.nasa.gov/2915/) and [NASA Black Marble](https://science.nasa.gov/earth/earth-observatory/earth-at-night/maps/). The Sun’s position is calculated using [U.S. Naval Observatory solar coordinates](https://aa.usno.navy.mil/faq/sun_approx) and [sidereal time](https://aa.usno.navy.mil/faq/GAST).
+The globe updates its solar lighting every minute. It renders terrain, ocean reflections, cloud shadows, twilight, and city lights. The cloud layer uses a [NASA satellite composite](https://science.nasa.gov/earth/earth-observatory/the-blue-marble-true-color-global-imagery-at-1km-resolution/) with lighting calculated for the current time. It works offline with satellite composites from [NASA Blue Marble Next Generation](https://science.nasa.gov/earth/earth-observatory/blue-marble-next-generation/base-topography/) and [NASA Black Marble](https://science.nasa.gov/earth/earth-observatory/earth-at-night/maps/). The Sun’s position is calculated using [U.S. Naval Observatory solar coordinates](https://aa.usno.navy.mil/faq/sun_approx) and [sidereal time](https://aa.usno.navy.mil/faq/GAST).
 
 Imagery credits go to NASA Earth Observatory and Reto Stöckli (Blue Marble) and to Joshua Stevens using Suomi NPP VIIRS data from Miguel Román, NASA GSFC (Black Marble).
 
@@ -21,15 +21,15 @@ With `just` installed, run `just build` to build the app or `just run` to build 
 open ".build/Menu Calendar.app"
 ```
 
-Hover over the built-in date and time or the space directly above it. Clicking the clock still opens Notification Center. Click the calendar’s **…** button and choose **Quit Menu Calendar** to exit.
+Hover over the built-in date and time or the space directly above it. Clicking the clock still opens Notification Center. Click **…** over the globe and choose **Quit Menu Calendar** to exit.
 
 ## Trackpad gestures
 
-In **Calendar**, swipe horizontally with two fingers to pull the next or previous month into view. The page snaps into place when you commit the swipe. Hover over a tab briefly or click it to switch views.
+Over the calendar, swipe horizontally with two fingers to pull the next or previous month into view. The page snaps into place when you commit the swipe.
 
-In **Globe**, drag or use two fingers to orbit the Earth, then release to let it coast. Pinch over the globe to zoom into the spot beneath the pointer. The globe temporarily takes app focus for trackpad input and returns it when you move away. A double-click zooms into that spot too. The zoom controls work at the center of the globe. Hover over the city control to open the picker, then pause on a name for a closer look, or click it to focus immediately. The reset button returns to the full-Earth view.
+Over the globe, drag or use two fingers to orbit the Earth, then release to let it coast. Pinch over the globe to zoom into the spot beneath the pointer. The globe temporarily takes app focus for trackpad input and returns it when you move away. A double-click zooms into that spot too. The zoom buttons work at the center of the globe and the scale readout shows the current level, up to 4.8×. Hover over the city control to open the picker, then pause on a name for a closer look, or click it to focus immediately. The reset button returns to the default 1.24× view. Use zoom out for the full Earth.
 
-Supported Force Touch trackpads give a small tap when a month, tab, or city selection commits and when zoom snaps to its limits.
+Supported Force Touch trackpads give a small tap when a month or city selection commits and when zoom snaps to its limits.
 
 ## Clock position
 
