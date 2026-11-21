@@ -1,5 +1,4 @@
 import AppKit
-import SwiftUI
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -95,21 +94,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(CGPoint(x: frame.midX, y: frame.midY)) })
         else { return }
 
-        let view = CalendarView(showOptions: { [weak self] in self?.showOptions() })
-        let hosting = NSHostingView(rootView: view)
-        let size = hosting.fittingSize
-        let panel = CalendarPanel(contentRect: CGRect(origin: .zero, size: size),
-                                  styleMask: [.borderless, .nonactivatingPanel],
-                                  backing: .buffered, defer: false)
-        panel.contentView = hosting
-        panel.title = "Menu Calendar"
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = true
-        panel.level = .floating
-        panel.hidesOnDeactivate = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
-
+        let panel = CalendarPanel(showOptions: { [weak self] in self?.showOptions() })
+        let size = panel.frame.size
         let usable = screen.visibleFrame
         let x = min(max(frame.maxX - size.width, usable.minX + 8), usable.maxX - size.width - 8)
         let top = min(frame.minY - 7, usable.maxY - 5)
@@ -145,9 +131,4 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuIsOpen = false
         leftAt = nil
     }
-}
-
-private final class CalendarPanel: NSPanel {
-    override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { false }
 }

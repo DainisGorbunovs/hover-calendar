@@ -4,6 +4,7 @@ struct MonthGrid {
     let start: Date
     let weeks: [[Date]]
     let weekdayNames: [String]
+    let weekendColumns: Set<Int>
     let title: String
 
     init(containing date: Date, calendar: Calendar) {
@@ -17,6 +18,11 @@ struct MonthGrid {
                 calendar.date(byAdding: .day, value: week * 7 + day - precedingDays, to: start)
             }
         }
+
+        weekendColumns = Set((weeks.first ?? []).enumerated().compactMap { index, date in
+            let noon = calendar.date(bySettingHour: 12, minute: 0, second: 0, of: date) ?? date
+            return calendar.isDateInWeekend(noon) ? index : nil
+        })
 
         let formatter = DateFormatter()
         formatter.locale = calendar.locale ?? .autoupdatingCurrent

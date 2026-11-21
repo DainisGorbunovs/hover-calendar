@@ -3,124 +3,206 @@ import SwiftUI
 struct CalendarView: View {
     let showOptions: () -> Void
 
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var pane: Pane = .calendar
     @State private var displayedMonth = Date.now
+
     private let calendar = Calendar.autoupdatingCurrent
+    private let weekColumnWidth: CGFloat = 22
+    private let dayColumnWidth: CGFloat = 36
+
+    private enum Pane {
+        case calendar, worldClock
+    }
+
+    private var palette: CalendarPalette {
+        colorScheme == .dark ? .dark : .light
+    }
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 60)) { context in
-            let month = MonthGrid(containing: displayedMonth, calendar: calendar)
-            VStack(spacing: 11) {
-                header(for: month)
-                dates(in: month, today: context.date)
-                Divider()
-                footer
+        let shape = RoundedRectangle(cornerRadius: 16)
+
+        VStack(spacing: 8) {
+            toolbar
+            Group {
+                switch pane {
+                case .calendar:
+                    TimelineView(.everyMinute) { context in
+                        let month = MonthGrid(containing: displayedMonth, calendar: calendar)
+                        monthView(month, today: context.date)
+                    }
+                case .worldClock:
+                    WorldClockView(palette: palette)
+                }
             }
-            .padding(14)
-            .frame(width: 330)
+            .frame(height: 221, alignment: .top)
         }
-        .background {
-            PopoverMaterial()
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 15))
+        .padding(12)
+        .frame(width: 298)
+        .background(palette.surface, in: shape)
         .overlay {
-            RoundedRectangle(cornerRadius: 15)
-                .strokeBorder(.primary.opacity(0.10), lineWidth: 1)
+            shape.strokeBorder(palette.outline)
                 .allowsHitTesting(false)
         }
     }
 
-    private func header(for month: MonthGrid) -> some View {
-        HStack(spacing: 4) {
-            Text(month.title)
-                .font(.system(size: 20, weight: .semibold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
-                .accessibilityAddTraits(.isHeader)
-            Spacer()
-            iconButton("chevron.backward", label: "Previous month") {
-                moveMonth(-1, from: month.start)
+    private var toolbar: some View {
+        HStack(spacing: 6) {
+            HStack(spacing: 2) {
+                tab("Calendar", symbol: "calendar", for: .calendar)
+                tab("World Clock", symbol: "globe", for: .worldClock)
             }
-            iconButton("chevron.forward", label: "Next month") {
-                moveMonth(1, from: month.start)
+            .padding(2)
+            .background(palette.track, in: RoundedRectangle(cornerRadius: 8))
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("View")
+
+            iconButton("ellipsis", label: "Options", action: showOptions)
+        }
+    }
+
+    private func tab(_ label: String, symbol: String, for destination: Pane) -> some View {
+        let isSelected = pane == destination
+
+        return Button {
+            pane = destination
+        } label: {
+            Label(label, systemImage: symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .lineLimit(1)
+                .foregroundStyle(isSelected ? palette.text : palette.secondary)
+                .frame(maxWidth: .infinity)
+                .frame(height: 24)
+                .background {
+                    if isSelected {
+                        RoundedRectangle(cornerRadius: 6).fill(palette.activeTab)
+                    }
+                }
+        }
+        .buttonStyle(CalendarButtonStyle(palette: palette))
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private func monthView(_ month: MonthGrid, today: Date) -> some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 3) {
+                Text(month.title)
+                    .font(.system(size: 16, weight: .semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                    .foregroundStyle(palette.text)
+                    .accessibilityAddTraits(.isHeader)
+
+                Spacer(minLength: 4)
+
+                iconButton("chevron.backward", label: "Previous month") {
+                    moveMonth(-1, from: month.start)
+                }
+                iconButton("chevron.forward", label: "Next month") {
+                    moveMonth(1, from: month.start)
+                }
+            }
+
+            dates(in: month, today: today)
+
+            HStack {
+                Button {
+                    displayedMonth = .now
+                } label: {
+                    Text("Today")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(palette.secondary)
+                        .padding(.horizontal, 7)
+                        .frame(height: 20)
+                }
+                .buttonStyle(CalendarButtonStyle(palette: palette))
+                .help("Return to the current month")
+
+                Spacer()
             }
         }
     }
 
     private func dates(in month: MonthGrid, today: Date) -> some View {
-        Grid(horizontalSpacing: 3, verticalSpacing: 3) {
-            GridRow {
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
                 Text("Wk")
-                    .frame(width: 26)
+                    .frame(width: weekColumnWidth)
                     .accessibilityLabel("Week number")
+
                 ForEach(month.weekdayNames.indices, id: \.self) { index in
                     Text(month.weekdayNames[index])
                         .lineLimit(1)
-                        .minimumScaleFactor(0.7)
-                        .frame(width: 35)
+                        .minimumScaleFactor(0.75)
+                        .foregroundStyle(month.weekendColumns.contains(index) ? palette.weekendText : palette.secondary)
+                        .frame(width: dayColumnWidth)
                 }
             }
             .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(.secondary)
-            .padding(.bottom, 4)
+            .foregroundStyle(palette.secondary)
+            .frame(height: 19)
 
             ForEach(month.weeks.indices, id: \.self) { index in
                 let week = month.weeks[index]
-                GridRow {
+                let isCurrentWeek = week.contains { calendar.isDate($0, inSameDayAs: today) }
+
+                HStack(spacing: 0) {
                     if let firstDay = week.first {
                         let number = calendar.component(.weekOfYear, from: firstDay)
                         Text(number, format: .number)
-                            .font(.system(size: 10, weight: .medium, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 26)
-                            .accessibilityLabel("Week \(number)")
+                            .font(.system(size: 10, weight: isCurrentWeek ? .semibold : .regular).monospacedDigit())
+                            .foregroundStyle(isCurrentWeek ? palette.text : palette.secondary)
+                            .frame(width: weekColumnWidth)
+                            .accessibilityLabel(isCurrentWeek ? "Current week, \(number)" : "Week \(number)")
                     }
-                    ForEach(week, id: \.self) { date in
-                        dayCell(date, in: month, today: today)
+                    ForEach(week.indices, id: \.self) { dayIndex in
+                        dayCell(week[dayIndex], in: month, today: today,
+                                isWeekend: month.weekendColumns.contains(dayIndex))
                     }
                 }
             }
         }
+        .background {
+            HStack(spacing: 0) {
+                Color.clear.frame(width: weekColumnWidth)
+                ForEach(month.weekdayNames.indices, id: \.self) { index in
+                    (month.weekendColumns.contains(index) ? palette.weekendSurface : Color.clear)
+                        .frame(width: dayColumnWidth)
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 7))
+            .accessibilityHidden(true)
+        }
     }
 
-    private func dayCell(_ date: Date, in month: MonthGrid, today: Date) -> some View {
+    private func dayCell(_ date: Date, in month: MonthGrid, today: Date, isWeekend: Bool) -> some View {
         let isToday = calendar.isDate(date, inSameDayAs: today)
         let isInMonth = calendar.isDate(date, equalTo: month.start, toGranularity: .month)
         let day = calendar.component(.day, from: date)
         let fullDate = date.formatted(.dateTime.weekday(.wide).day().month(.wide).year())
+        let dayColor = isInMonth ? (isWeekend ? palette.weekendText : palette.text) : palette.adjacent
 
-        return ZStack {
-            if isToday {
-                Circle()
-                    .fill(Color.accentColor)
-                    .frame(width: 29, height: 29)
+        return Text(day, format: .number)
+            .font(.system(size: 12, weight: isToday ? .semibold : .medium).monospacedDigit())
+            .foregroundStyle(isToday ? Color.white : dayColor)
+            .frame(width: 21, height: 21)
+            .background {
+                if isToday {
+                    Circle().fill(palette.accent)
+                }
             }
-            Text(day, format: .number)
-                .font(.system(size: 13, weight: isToday ? .bold : .medium).monospacedDigit())
-                .foregroundStyle(isToday ? Color.white : isInMonth ? Color.primary : Color.secondary)
-        }
-        .frame(width: 35, height: 30)
-        .accessibilityLabel(isToday ? "Today, \(fullDate)" : fullDate)
-    }
-
-    private var footer: some View {
-        HStack(spacing: 6) {
-            Button("Today") { displayedMonth = .now }
-            Spacer()
-            iconButton("ellipsis", label: "Options", action: showOptions)
-        }
-        .controlSize(.small)
+            .frame(width: dayColumnWidth, height: 24)
+            .accessibilityLabel(isToday ? "Today, \(fullDate)" : fullDate)
     }
 
     private func iconButton(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(palette.secondary)
                 .frame(width: 25, height: 25)
-                .contentShape(Rectangle())
         }
-        .buttonStyle(.bordered)
-        .buttonBorderShape(.roundedRectangle)
-        .controlSize(.small)
+        .buttonStyle(CalendarButtonStyle(palette: palette))
         .accessibilityLabel(label)
         .help(label)
     }
@@ -132,14 +214,26 @@ struct CalendarView: View {
     }
 }
 
-private struct PopoverMaterial: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = .popover
-        view.blendingMode = .behindWindow
-        view.state = .active
-        return view
+private struct CalendarButtonStyle: ButtonStyle {
+    let palette: CalendarPalette
+
+    func makeBody(configuration: Configuration) -> some View {
+        ButtonContent(configuration: configuration, palette: palette)
     }
 
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
+    private struct ButtonContent: View {
+        let configuration: ButtonStyle.Configuration
+        let palette: CalendarPalette
+        @State private var isHovered = false
+
+        var body: some View {
+            configuration.label
+                .background {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(configuration.isPressed || isHovered ? palette.outline : Color.clear)
+                }
+                .contentShape(Rectangle())
+                .onHover { isHovered = $0 }
+        }
+    }
 }

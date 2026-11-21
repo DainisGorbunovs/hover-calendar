@@ -1,6 +1,8 @@
 # Menu Calendar
 
-Hover over the built-in macOS menu-bar date and time to see the month beneath it. The calendar stays open as you move into it, so you can browse other months with the arrows or return with **Today**. The grid highlights today and shows week numbers using your Mac’s calendar and regional settings.
+Hover over the built-in macOS menu-bar date and time to see the month beneath it. The calendar stays open as you move into it, so you can browse other months with the arrows or return with **Today**. The grid highlights today and shades weekend columns. Week numbers, the first day of the week, and weekends follow your Mac’s calendar and regional settings.
+
+Switch to **World Clock** in the popup for London, New York, Chicago, San Francisco, Riga, and Taipei. The clocks refresh each minute and show 24-hour local time and UTC offsets, with time-zone abbreviations where available. A city’s date appears when it differs from yours.
 
 ## Build and run
 
