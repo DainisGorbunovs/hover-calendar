@@ -1,9 +1,12 @@
+import Combine
 import SwiftUI
 
 struct CalendarView: View {
     let showOptions: () -> Void
+    let swipes: AnyPublisher<TrackpadSwipe.Direction, Never>
 
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var pane: Pane = .calendar
     @State private var displayedMonth = Date.now
 
@@ -36,10 +39,12 @@ struct CalendarView: View {
                 }
             }
             .frame(height: 221, alignment: .top)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: pane)
         }
         .padding(12)
         .frame(width: 298)
         .background(palette.surface, in: shape)
+        .onReceive(swipes, perform: navigate)
         .overlay {
             shape.strokeBorder(palette.outline)
                 .allowsHitTesting(false)
@@ -81,6 +86,8 @@ struct CalendarView: View {
         }
         .buttonStyle(CalendarButtonStyle(palette: palette))
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .help(destination == .calendar ? "Swipe down with two fingers for Calendar"
+                                      : "Swipe up with two fingers for World Clock")
     }
 
     private func monthView(_ month: MonthGrid, today: Date) -> some View {
@@ -95,11 +102,11 @@ struct CalendarView: View {
 
                 Spacer(minLength: 4)
 
-                iconButton("chevron.backward", label: "Previous month") {
-                    moveMonth(-1, from: month.start)
+                iconButton("chevron.backward", label: "Previous month", help: "Previous month · two-finger swipe right") {
+                    moveMonth(-1)
                 }
-                iconButton("chevron.forward", label: "Next month") {
-                    moveMonth(1, from: month.start)
+                iconButton("chevron.forward", label: "Next month", help: "Next month · two-finger swipe left") {
+                    moveMonth(1)
                 }
             }
 
@@ -195,7 +202,8 @@ struct CalendarView: View {
             .accessibilityLabel(isToday ? "Today, \(fullDate)" : fullDate)
     }
 
-    private func iconButton(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {
+    private func iconButton(_ symbol: String, label: String, help: String? = nil,
+                            action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 11, weight: .semibold))
@@ -204,11 +212,27 @@ struct CalendarView: View {
         }
         .buttonStyle(CalendarButtonStyle(palette: palette))
         .accessibilityLabel(label)
-        .help(label)
+        .help(help ?? label)
     }
 
-    private func moveMonth(_ amount: Int, from start: Date) {
-        if let nextMonth = calendar.date(byAdding: .month, value: amount, to: start) {
+    private func navigate(_ direction: TrackpadSwipe.Direction) {
+        switch (pane, direction) {
+        case (.calendar, .left):
+            moveMonth(1)
+        case (.calendar, .right):
+            moveMonth(-1)
+        case (.calendar, .up):
+            pane = .worldClock
+        case (.worldClock, .down):
+            pane = .calendar
+        default:
+            break
+        }
+    }
+
+    private func moveMonth(_ amount: Int) {
+        if let start = calendar.dateInterval(of: .month, for: displayedMonth)?.start,
+           let nextMonth = calendar.date(byAdding: .month, value: amount, to: start) {
             displayedMonth = nextMonth
         }
     }

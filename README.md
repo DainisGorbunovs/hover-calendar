@@ -17,6 +17,16 @@ open ".build/Menu Calendar.app"
 
 Hover over the built-in date and time. Clicking the clock still opens Notification Center. Click the calendar’s **…** button and choose **Quit Menu Calendar** to exit.
 
+## Trackpad gestures
+
+With the pointer over the popup, use a two-finger swipe.
+
+- Swipe left for the next month or right for the previous month.
+- Swipe up from Calendar to open World Clock.
+- Swipe down from World Clock to return to the same month.
+
+The arrows and tabs also work by clicking.
+
 ## Clock position
 
 The app uses pointer coordinates and the menu bar’s bounds. It requires no Accessibility or Screen Recording permission. The default hover area is 145 points wide and ends 20 points from the right edge, matching the tested macOS 27 clock layout. If your clock format or menu bar layout changes, set the width and right inset in points, then relaunch the app.
