@@ -4,6 +4,7 @@ struct GlobeWeatherBadge: View {
     let layer: GlobeLayer
     let city: String
     let field: AppleWeatherField?
+    let instant: Date
     let enabled: Bool
     let failed: Bool
 
@@ -20,8 +21,8 @@ struct GlobeWeatherBadge: View {
                     .foregroundStyle(.white.opacity(0.72))
                     .lineLimit(1)
                 Spacer(minLength: 4)
-                if let field {
-                    Text(layer.reading(field.center))
+                if let reading = field?.center(at: instant) {
+                    Text(layer.reading(reading))
                         .font(.system(size: 12, weight: .semibold).monospacedDigit())
                         .lineLimit(1)
                         .minimumScaleFactor(0.82)
@@ -29,7 +30,7 @@ struct GlobeWeatherBadge: View {
             }
             if let field {
                 scale
-                Text("Sampled forecast · \(field.date.formatted(date: .omitted, time: .shortened))")
+                Text("Sampled forecast · \(instant.formatted(date: .omitted, time: .shortened))")
                     .font(.system(size: 8))
                     .foregroundStyle(.white.opacity(0.72))
                 if let attribution = field.attribution {
@@ -76,23 +77,30 @@ struct GlobeWeatherBadge: View {
         .accessibilityHidden(true)
     }
 
+    /// The legend reads straight off the ramp the globe draws with, so the two
+    /// can never disagree.
     private var colors: [Color] {
-        switch layer {
-        case .temperature: [Color(red: 0.25, green: 0.44, blue: 0.94),
-                            Color(red: 0.38, green: 0.81, blue: 0.74),
-                            Color(red: 1, green: 0.37, blue: 0.21)]
-        case .precipitation: [Color(red: 0.36, green: 0.79, blue: 1),
-                              Color(red: 0.60, green: 0.32, blue: 0.93),
-                              Color(red: 1, green: 0.58, blue: 0.25)]
-        default: [Color(red: 0.20, green: 0.42, blue: 0.72), Color(red: 0.24, green: 0.82, blue: 0.91)]
+        guard let stops = layer.colorStops else { return [] }
+        return stride(from: 0, through: 12, by: 1).map { step in
+            let position = Double(step) / 12
+            let color = WeatherColorScale.color(in: stops, at: layer.value(at: position))
+            return Color(.sRGB, red: color.r, green: color.g, blue: color.b, opacity: 1)
         }
     }
 
     private var labels: (String, String) {
-        switch layer {
-        case .temperature: ("−10°C", "35°C")
-        case .precipitation: ("0.15 mm/h", "12 mm/h")
-        default: ("0 mph", "75 mph")
+        func reading(at position: Double) -> String {
+            let value = layer.value(at: position)
+            switch layer {
+            case .daylight: return ""
+            case .temperature: return "\(Int(value.rounded()))°C"
+            case .precipitation:
+                return value < 10
+                    ? "\(value.formatted(.number.precision(.fractionLength(1)))) mm/h"
+                    : "\(Int(value.rounded())) mm/h"
+            case .wind: return "\(Int((value / 1.609344).rounded())) mph"
+            }
         }
+        return (reading(at: 0), reading(at: 1))
     }
 }

@@ -108,6 +108,7 @@ struct DaylightMapView: View {
                                 .allowsHitTesting(false)
                         } else {
                             GlobeWeatherBadge(layer: layer, city: city.name, field: field,
+                                              instant: context.date,
                                               enabled: AppleWeatherService.entitled, failed: weatherFailed)
                                 .padding(5)
                         }
@@ -154,7 +155,8 @@ struct DaylightMapView: View {
         return ZStack(alignment: .topTrailing) {
             if let metal {
                 GlobeScene(
-                    camera: camera, sun: sun, resources: metal, layer: layer, weather: field, selectedID: active?.id,
+                    camera: camera, sun: sun, resources: metal, layer: layer, weather: field,
+                    instant: date, selectedID: active?.id,
                     select: { location in focus(on: location, withFeedback: true) },
                     input: input, devicePlace: location.place,
                     zoomIn: { point, size in zoom(by: 1.52, around: point, in: size) }
@@ -433,6 +435,7 @@ private struct GlobeScene: View {
     let resources: GlobeMetalRenderer.Resources
     let layer: GlobeLayer
     let weather: AppleWeatherField?
+    let instant: Date
     let selectedID: String?
     let select: (WorldClockLocation) -> Void
 
@@ -446,7 +449,8 @@ private struct GlobeScene: View {
                 camera.project(location, in: geometry.size).map { Pin(location: location, point: $0) }
             }
             ZStack {
-                GlobeMetalView(camera: camera, sun: sun, resources: resources, layer: layer, weather: weather)
+                GlobeMetalView(camera: camera, sun: sun, resources: resources, layer: layer,
+                               weather: weather, instant: instant)
                     .allowsHitTesting(false)
 
                 ForEach(pins) { pin in

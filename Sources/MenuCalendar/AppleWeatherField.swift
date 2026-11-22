@@ -146,13 +146,57 @@ struct WeatherSample: Sendable {
     }
 }
 
-struct AppleWeatherField: Sendable {
-    let region: WeatherRegion
-    let samples: [WeatherSample]
+/// One hour of the forecast across the region's grid, in row-major order.
+struct WeatherFrame: Sendable {
     let date: Date
-    let attribution: WeatherAttribution?
+    let samples: [WeatherSample]
 
     var center: WeatherSample { samples[samples.count / 2] }
+}
+
+struct AppleWeatherField: Sendable {
+    /// How many hours of forecast to keep. Apple's own map asks for a similar
+    /// span either side of now.
+    static let frameLimit = 13
+
+    let region: WeatherRegion
+    let frames: [WeatherFrame]
+    let attribution: WeatherAttribution?
+
+    var date: Date { frames.first?.date ?? .distantPast }
+
+    /// The two frames `instant` falls between, and how far across it sits.
+    /// Outside the forecast both frames are the nearest one, so the blend
+    /// holds still rather than extrapolating.
+    func bracket(at instant: Date) -> (earlier: WeatherFrame, later: WeatherFrame, progress: Double)? {
+        guard let first = frames.first, let last = frames.last else { return nil }
+        if instant <= first.date { return (first, first, 0) }
+        if instant >= last.date { return (last, last, 0) }
+
+        for index in 1..<frames.count {
+            let later = frames[index]
+            guard instant < later.date else { continue }
+            let earlier = frames[index - 1]
+            let span = later.date.timeIntervalSince(earlier.date)
+            guard span > 0 else { return (earlier, earlier, 0) }
+            let progress = instant.timeIntervalSince(earlier.date) / span
+            return (earlier, later, min(1, max(0, progress)))
+        }
+        return (last, last, 0)
+    }
+
+    /// The reading at the middle of the grid, blended the same way the globe
+    /// blends the overlay, so the badge and the colours agree.
+    func center(at instant: Date) -> WeatherSample? {
+        guard let bracket = bracket(at: instant) else { return nil }
+        let earlier = bracket.earlier.center
+        let later = bracket.later.center
+        func blend(_ a: Double, _ b: Double) -> Double { a + (b - a) * bracket.progress }
+        return WeatherSample(temperature: blend(earlier.temperature, later.temperature),
+                             precipitation: blend(earlier.precipitation, later.precipitation),
+                             east: blend(earlier.east, later.east),
+                             north: blend(earlier.north, later.north))
+    }
 }
 
 actor AppleWeatherService {
@@ -169,9 +213,15 @@ actor AppleWeatherService {
     private var requests: [WeatherRegion: Task<AppleWeatherField, Error>] = [:]
     private var attribution: WeatherAttribution?
 
+    /// A fetch stays useful for far longer than it used to: it brings back
+    /// hours of forecast, and the globe reads the current moment out of it
+    /// rather than redrawing a snapshot. Holding it an hour keeps the display
+    /// current while asking WeatherKit for a quarter as much.
+    private static let cacheLifetime = 60.0 * 60
+
     func field(for region: WeatherRegion) async throws -> AppleWeatherField {
         let now = Date.now
-        cache = cache.filter { now.timeIntervalSince($0.value.fetched) < 15 * 60 }
+        cache = cache.filter { now.timeIntervalSince($0.value.fetched) < Self.cacheLifetime }
         if let existing = cache[region] { return existing.field }
         if let running = requests[region] { return try await running.value }
 
@@ -193,40 +243,58 @@ actor AppleWeatherService {
             attribution = mark
         }
 
-        var samples: [WeatherSample] = []
-        var date = Date.distantFuture
+        // One hourly forecast per grid point, which is a single request each,
+        // the same cost as asking for the current conditions alone.
+        var grid: [[Date: WeatherSample]] = []
         for row in 0..<WeatherRegion.side {
-            let columns = try await withThrowingTaskGroup(of: (Int, Date, WeatherSample).self) { group in
+            let columns = try await withThrowingTaskGroup(of: (Int, [Date: WeatherSample]).self) { group in
                 for column in 0..<WeatherRegion.side {
                     let coordinate = region.coordinate(row: row, column: column)
                     group.addTask {
                         let place = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
-                        let weather = try await service.weather(for: place, including: .current)
-                        let speed = weather.wind.speed.converted(to: .kilometersPerHour).value
-                        let direction = weather.wind.direction.converted(to: .radians).value
-                        let amount = weather.precipitationIntensity.converted(to: .kilometersPerHour).value * 1_000_000
-                        let temperature = weather.temperature.converted(to: .celsius).value
-                        guard temperature.isFinite, amount.isFinite, speed.isFinite, direction.isFinite else {
-                            throw SamplingError.invalidReading
+                        let forecast = try await service.weather(for: place, including: .hourly)
+                        var hours: [Date: WeatherSample] = [:]
+                        for hour in forecast {
+                            let speed = hour.wind.speed.converted(to: .kilometersPerHour).value
+                            let direction = hour.wind.direction.converted(to: .radians).value
+                            // An hour's accumulation in millimetres is an
+                            // intensity in mm/h, which is what the scale wants.
+                            let amount = hour.precipitationAmount.converted(to: .millimeters).value
+                            let temperature = hour.temperature.converted(to: .celsius).value
+                            guard temperature.isFinite, amount.isFinite, speed.isFinite, direction.isFinite
+                            else { continue }
+                            hours[hour.date] = WeatherSample(
+                                temperature: temperature,
+                                precipitation: max(0, amount),
+                                east: -sin(direction) * speed,
+                                north: -cos(direction) * speed
+                            )
                         }
-                        let sample = WeatherSample(
-                            temperature: temperature,
-                            precipitation: max(0, amount),
-                            east: -sin(direction) * speed,
-                            north: -cos(direction) * speed
-                        )
-                        return (column, weather.date, sample)
+                        return (column, hours)
                     }
                 }
-                var values: [(Int, Date, WeatherSample)] = []
+                var values: [(Int, [Date: WeatherSample])] = []
                 for try await result in group { values.append(result) }
                 return values.sorted { $0.0 < $1.0 }
             }
-            for (_, timestamp, sample) in columns {
-                date = min(date, timestamp)
-                samples.append(sample)
-            }
+            grid.append(contentsOf: columns.map { $0.1 })
         }
-        return AppleWeatherField(region: region, samples: samples, date: date, attribution: mark)
+
+        return AppleWeatherField(region: region, frames: Self.frames(from: grid), attribution: mark)
+    }
+
+    /// Turns one hourly series per grid point into whole-grid frames, keeping
+    /// only the hours every point reported so no frame has a hole in it.
+    private static func frames(from grid: [[Date: WeatherSample]]) -> [WeatherFrame] {
+        guard let first = grid.first else { return [] }
+        let shared = first.keys
+            .filter { date in grid.allSatisfy { $0[date] != nil } }
+            .sorted()
+        // Keep the hour we are in, so the blend has something to start from.
+        let start = Date.now.addingTimeInterval(-3600)
+        return shared
+            .drop { $0 < start }
+            .prefix(AppleWeatherField.frameLimit)
+            .map { date in WeatherFrame(date: date, samples: grid.map { $0[date]! }) }
     }
 }

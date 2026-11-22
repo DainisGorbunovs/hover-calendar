@@ -27,7 +27,9 @@ Hover over the built-in date and time or the space directly above it. Clicking t
 
 ## Apple Weather layers
 
-Open **… → Weather Layers** to choose **Temperature**, **Precipitation**, or **Wind**. The globe zooms to the selected city’s region and renders a sampled forecast from Apple WeatherKit. Wind streaks follow the sampled wind vectors. The weather badge shows the update time and links to Apple Weather’s data attribution.
+Open **… → Weather Layers** to choose **Temperature**, **Precipitation**, or **Wind**. The globe zooms to the selected city’s region and renders a sampled forecast from Apple WeatherKit. Wind streaks follow the sampled wind vectors. The weather badge shows the reading at the middle of the grid and links to Apple Weather’s data attribution.
+
+Each sampled point brings back its hourly forecast, which is one request either way, so a single fetch covers the next thirteen hours. The globe draws the two hours the current moment falls between and blends them in stored units before any colour is chosen, the way Apple's own tweening pass does, so the overlay drifts with the clock instead of stepping on the hour. The badge blends the same way, so the number and the colours always agree.
 
 Live weather uses a signed macOS build with an Apple Developer Program profile for an explicit App ID that has WeatherKit enabled in both App Services and App Capabilities. Set `WEATHERKIT_PROFILE` to the macOS provisioning profile and `CODE_SIGN_IDENTITY` to its signing identity, then run `just run`. This creates `.build/Menu Calendar Weather.app` using the bundle identifier from the profile. The standard local build shows the WeatherKit setup message when a weather layer is selected. [Apple WeatherKit setup](https://developer.apple.com/help/account/services/weatherkit/)
 
