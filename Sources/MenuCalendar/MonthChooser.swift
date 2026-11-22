@@ -6,22 +6,24 @@ struct MonthChooser: View {
     let palette: CalendarPalette
     let visibleMonth: Date
     let choose: (Date) -> Void
+    let showYears: () -> Void
     let close: () -> Void
 
-    @State private var yearReference: Date
+    @Binding var yearReference: Date
     @State private var yearText: String
     @FocusState private var editingYear: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    init(calendar: Calendar, palette: CalendarPalette, visibleMonth: Date,
-         choose: @escaping (Date) -> Void, close: @escaping () -> Void) {
+    init(calendar: Calendar, palette: CalendarPalette, visibleMonth: Date, yearReference: Binding<Date>,
+         choose: @escaping (Date) -> Void, showYears: @escaping () -> Void, close: @escaping () -> Void) {
         self.calendar = calendar
         self.palette = palette
         self.visibleMonth = visibleMonth
         self.choose = choose
+        self.showYears = showYears
         self.close = close
-        _yearReference = State(initialValue: visibleMonth)
-        _yearText = State(initialValue: String(calendar.component(.year, from: visibleMonth)))
+        _yearReference = yearReference
+        _yearText = State(initialValue: String(calendar.component(.year, from: yearReference.wrappedValue)))
     }
 
     var body: some View {
@@ -59,12 +61,25 @@ struct MonthChooser: View {
                     }
                     .accessibilityLabel("Year")
                     .help("Type a year, then choose a month")
+                    .onChange(of: yearText) { value in
+                        if let next = CalendarYear.date(forYear: value, near: yearReference, calendar: calendar) {
+                            yearReference = next
+                        }
+                    }
                     .onSubmit {
                         if let target { setYear(target) }
                         editingYear = false
                     }
                 yearButton("chevron.forward", label: "Next year", step: 1)
-                Spacer(minLength: 23)
+                Spacer(minLength: 0)
+                Button(action: showYears) {
+                    Image(systemName: "square.grid.2x2")
+                        .font(.system(size: 10, weight: .semibold))
+                        .frame(width: 23, height: 23)
+                }
+                .buttonStyle(CalendarButtonStyle(palette: palette))
+                .accessibilityLabel("Browse years")
+                .help("Browse years · pinch together")
             }
             .foregroundStyle(palette.secondary)
 

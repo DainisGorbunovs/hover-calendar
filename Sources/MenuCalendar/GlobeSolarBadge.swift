@@ -7,7 +7,7 @@ struct GlobeSolarBadge: View, Equatable {
     private let amber = Color(red: 1, green: 0.76, blue: 0.44)
 
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.city.id == rhs.city.id && lhs.instant == rhs.instant
+        lhs.city == rhs.city && lhs.instant == rhs.instant
     }
 
     var body: some View {

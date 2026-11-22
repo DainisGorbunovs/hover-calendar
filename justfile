@@ -4,4 +4,4 @@ build:
 
 # Build and launch Menu Calendar.
 run: build
-    open ".build/Menu Calendar.app"
+    if [ -n "${WEATHERKIT_PROFILE:-}" ]; then open ".build/Menu Calendar Weather.app"; else open ".build/Menu Calendar.app"; fi

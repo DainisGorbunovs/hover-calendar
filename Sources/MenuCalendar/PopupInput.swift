@@ -2,7 +2,7 @@ import AppKit
 import Combine
 import SwiftUI
 
-struct GlobePinch {
+struct PopupPinch {
     let phase: NSEvent.Phase
     let scale: CGFloat
     let anchor: CGPoint
@@ -13,7 +13,7 @@ struct GlobePinch {
         private var size: CGSize = .zero
         private var scale: CGFloat = 1
 
-        mutating func update(phase: NSEvent.Phase, delta: CGFloat, point: CGPoint, bounds: CGRect) -> GlobePinch? {
+        mutating func update(phase: NSEvent.Phase, delta: CGFloat, point: CGPoint, bounds: CGRect) -> PopupPinch? {
             if phase.contains(.began) { reset() }
             if anchor == nil {
                 guard !phase.contains(.ended), !phase.contains(.cancelled), bounds.contains(point) else { return nil }
@@ -25,7 +25,7 @@ struct GlobePinch {
             if delta.isFinite, !phase.contains(.cancelled) {
                 scale = min(100, max(0.01, scale * max(0.1, 1 + delta)))
             }
-            let pinch = GlobePinch(phase: phase, scale: scale, anchor: anchor, size: size)
+            let pinch = PopupPinch(phase: phase, scale: scale, anchor: anchor, size: size)
             if phase.contains(.ended) || phase.contains(.cancelled) { reset() }
             return pinch
         }
@@ -83,14 +83,16 @@ final class PopupInput {
     weak var panel: NSPanel?
     weak var viewport: NSView?
     weak var calendarViewport: NSView?
-    let events = PassthroughSubject<GlobePinch, Never>()
+    let calendarPinches = PassthroughSubject<PopupPinch, Never>()
+    let globePinches = PassthroughSubject<PopupPinch, Never>()
 
     private enum Source { case native, contacts }
     private var source: Source?
-    private var tracker = GlobePinch.Tracker()
+    private var tracker = PopupPinch.Tracker()
     private var indirect = IndirectPinch()
     private var active = true
-    private var overCanvas = false
+    private var overGestureSurface = false
+    private var pinchSurface: ScrollSurface?
     private var previousApp: NSRunningApplication?
     private var restoreTask: Task<Void, Never>?
     private var activationPending = false
@@ -111,22 +113,21 @@ final class PopupInput {
     }
 
     func updatePointer(_ screenPoint: CGPoint) {
-        guard active, let viewport, let panel, panel.isVisible, viewport.window === panel else {
-            if overCanvas { leaveCanvas() }
+        guard active, let panel, panel.isVisible else {
+            if overGestureSurface { leaveCanvas() }
             return
         }
-        let point = viewport.convert(panel.convertPoint(fromScreen: screenPoint), from: nil)
-        let hovered = viewport.bounds.contains(point)
-        guard hovered != overCanvas else { return }
+        let hovered = scrollSurface(at: panel.convertPoint(fromScreen: screenPoint)) != nil
+        guard hovered != overGestureSurface else { return }
         if hovered {
-            overCanvas = true
+            overGestureSurface = true
             restoreTask?.cancel()
             if !NSApp.isActive, !activationPending {
                 previousApp = NSWorkspace.shared.frontmostApplication
                 requestActivation()
             }
             panel.makeKey()
-        } else if overCanvas {
+        } else if overGestureSurface {
             leaveCanvas()
         }
     }
@@ -153,7 +154,7 @@ final class PopupInput {
         NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, _ in
             Task { @MainActor in
                 self.activationPending = false
-                if self.active, self.overCanvas {
+                if self.active, self.overGestureSurface {
                     self.panel?.makeKey()
                 } else {
                     self.restorePreviousApp()
@@ -163,10 +164,12 @@ final class PopupInput {
     }
 
     private func leaveCanvas() {
-        overCanvas = false
-        if let viewport, let pinch = tracker.update(phase: .cancelled, delta: 0, point: .zero, bounds: viewport.bounds) {
-            events.send(pinch)
+        overGestureSurface = false
+        if let surface = pinchSurface, let view = view(for: surface),
+           let pinch = tracker.update(phase: .cancelled, delta: 0, point: .zero, bounds: view.bounds) {
+            emit(pinch, to: surface)
         }
+        pinchSurface = nil
         tracker.reset()
         indirect.reset()
         source = nil
@@ -179,7 +182,7 @@ final class PopupInput {
         restoreTask = Task { @MainActor in
             // Let an outside click or an app switch settle before restoring the previous application.
             try? await Task.sleep(nanoseconds: 65_000_000)
-            guard !Task.isCancelled, !overCanvas, let previousApp else { return }
+            guard !Task.isCancelled, !overGestureSurface, let previousApp else { return }
             self.previousApp = nil
             if NSApp.isActive, !previousApp.isTerminated,
                previousApp.processIdentifier != ProcessInfo.processInfo.processIdentifier {
@@ -189,35 +192,69 @@ final class PopupInput {
         }
     }
 
+    private func view(for surface: ScrollSurface) -> NSView? {
+        let view = surface == .calendar ? calendarViewport : viewport
+        return view?.window === panel ? view : nil
+    }
+
+    private func emit(_ pinch: PopupPinch, to surface: ScrollSurface) {
+        switch surface {
+        case .calendar: calendarPinches.send(pinch)
+        case .globe: globePinches.send(pinch)
+        }
+    }
+
     func send(_ event: NSEvent) -> Bool {
-        guard active, overCanvas, let viewport, viewport.window === panel,
-              event.type == .magnify || event.type == .endGesture else { return false }
+        guard active, overGestureSurface, event.type == .magnify || event.type == .endGesture else { return false }
         if source == .contacts { return true }
 
         let phase = event.type == .endGesture ? NSEvent.Phase.ended : event.phase
         let delta = event.type == .magnify ? event.magnification : 0
-        let point = viewport.convert(event.locationInWindow, from: nil)
-        guard let pinch = tracker.update(phase: phase, delta: delta, point: point, bounds: viewport.bounds)
+        let hit = scrollSurface(at: event.locationInWindow)
+        guard let surface = phase.contains(.began) ? hit : pinchSurface ?? hit,
+              let view = view(for: surface) else { return false }
+
+        let point = view.convert(event.locationInWindow, from: nil)
+        guard let pinch = tracker.update(phase: phase, delta: delta, point: point, bounds: view.bounds)
         else { return false }
-        source = phase.contains(.ended) || phase.contains(.cancelled) ? nil : .native
+
+        let complete = phase.contains(.ended) || phase.contains(.cancelled)
+        source = complete ? nil : .native
+        pinchSurface = complete ? nil : surface
         indirect.reset()
-        events.send(pinch)
+        emit(pinch, to: surface)
         return true
     }
 
-    func observeTouches(_ event: NSEvent, in view: NSView, cancelled: Bool = false) -> Bool {
-        guard active, overCanvas, source != .native, let panel, let viewport else { return false }
+    func observeTouches(_ event: NSEvent, in view: NSView, ending: Bool = false, cancelled: Bool = false) -> Bool {
+        guard active, overGestureSurface, let panel else { return false }
+        let windowPoint = panel.convertPoint(fromScreen: NSEvent.mouseLocation)
+        guard let surface = pinchSurface ?? scrollSurface(at: windowPoint),
+              let target = self.view(for: surface) else { return false }
 
         let fingers = Array(event.touches(matching: .touching, in: view))
-        let point = viewport.convert(panel.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
+        let point = target.convert(windowPoint, from: nil)
+        if source == .native {
+            if ending, cancelled || fingers.count < 2 {
+                let phase: NSEvent.Phase = cancelled ? .cancelled : .ended
+                if let pinch = tracker.update(phase: phase, delta: 0, point: point, bounds: target.bounds) {
+                    emit(pinch, to: surface)
+                }
+                source = nil
+                pinchSurface = nil
+                indirect.reset()
+            }
+            return false
+        }
         guard !cancelled, fingers.count == 2 else {
             let wasPinching = source == .contacts
             if wasPinching {
                 let phase: NSEvent.Phase = cancelled ? .cancelled : .ended
-                if let pinch = tracker.update(phase: phase, delta: 0, point: point, bounds: viewport.bounds) {
-                    events.send(pinch)
+                if let pinch = tracker.update(phase: phase, delta: 0, point: point, bounds: target.bounds) {
+                    emit(pinch, to: surface)
                 }
                 source = nil
+                pinchSurface = nil
             }
             indirect.reset()
             return wasPinching
@@ -230,10 +267,12 @@ final class PopupInput {
         }
         let pair = IndirectPinch.ContactPair(position(fingers[0]), position(fingers[1]))
         guard let motion = indirect.update(pair),
-              let pinch = tracker.update(phase: motion.phase, delta: motion.delta, point: point, bounds: viewport.bounds)
+              let pinch = tracker.update(phase: motion.phase, delta: motion.delta, point: point, bounds: target.bounds)
         else { return source == .contacts }
+
         source = .contacts
-        events.send(pinch)
+        pinchSurface = surface
+        emit(pinch, to: surface)
         return true
     }
 }

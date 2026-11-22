@@ -12,9 +12,10 @@ struct DaylightMapView: View {
     @Binding var selected: WorldClockLocation?
     let swipes: AnyPublisher<TrackpadMotion, Never>
     let input: PopupInput
+    @ObservedObject var location: LocalGlobeLocation
 
     let focusRequests: AnyPublisher<GlobeFocusRequest, Never>
-    let showOptions: () -> Void
+    let showOptions: (GlobeMenu) -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var camera: GlobeCamera
@@ -27,6 +28,18 @@ struct DaylightMapView: View {
     @State private var cameraTask: Task<Void, Never>?
     @State private var metal: GlobeMetalRenderer.Resources?
     @State private var preparing = true
+    @State private var followsHome = true
+    @AppStorage("GlobeLayer") private var layer = GlobeLayer.daylight
+    @State private var weather: AppleWeatherField?
+    @State private var weatherFailed = false
+
+    private struct WeatherLoadKey: Hashable {
+        let region: WeatherRegion
+        let quarterHour: Int
+    }
+
+    private var hasWeatherView: Bool { layer != .daylight && AppleWeatherService.entitled }
+    private var zoomLimit: Double { hasWeatherView ? WeatherRegion.mapZoom : GlobeCamera.maximumZoom }
 
     private struct Textures {
         let day: URL
@@ -56,44 +69,67 @@ struct DaylightMapView: View {
     private static let fallback = textures.flatMap { EarthMapRenderer(dayURL: $0.day, nightURL: $0.night) }
 
     init(palette: CalendarPalette, selected: Binding<WorldClockLocation?>,
-         swipes: AnyPublisher<TrackpadMotion, Never>, input: PopupInput,
-         focusRequests: AnyPublisher<GlobeFocusRequest, Never>, showOptions: @escaping () -> Void) {
+         swipes: AnyPublisher<TrackpadMotion, Never>, input: PopupInput, location: LocalGlobeLocation,
+         focusRequests: AnyPublisher<GlobeFocusRequest, Never>, showOptions: @escaping (GlobeMenu) -> Void) {
         self.palette = palette
         _selected = selected
         self.swipes = swipes
         self.input = input
+        self.location = location
         self.focusRequests = focusRequests
         self.showOptions = showOptions
 
-        let overview = GlobeCamera.overview(sun: SolarPosition(at: .now))
-        _camera = State(initialValue: selected.wrappedValue.map { overview.focused(on: $0) } ?? overview)
+        let overview = GlobeCamera.overview(sun: SolarPosition(at: .now), home: location.place ?? WorldClockLocation.localOrDefault)
+        var start = selected.wrappedValue.map { overview.focused(on: $0) } ?? overview
+        let savedLayer = GlobeLayer(rawValue: UserDefaults.standard.integer(forKey: "GlobeLayer")) ?? .daylight
+        if savedLayer != .daylight, AppleWeatherService.entitled {
+            start.zoom = WeatherRegion.mapZoom
+        }
+        _camera = State(initialValue: start)
     }
 
     var body: some View {
         TimelineView(.everyMinute) { context in
             let sun = SolarPosition(at: context.date)
-            let localCity = WorldClockLocation.locations.first { $0.id == TimeZone.autoupdatingCurrent.identifier }
-            let city = selected ?? localCity ?? WorldClockLocation.locations.first
-            scene(active: city, at: context.date, sun: sun)
+            let city = selected ?? location.place ?? WorldClockLocation.localOrDefault
+            let region = city.map(WeatherRegion.init(around:))
+            let field = weather?.region == region ? weather : nil
+            let request = hasWeatherView ? region.map {
+                WeatherLoadKey(region: $0, quarterHour: Int(context.date.timeIntervalSince1970 / 900))
+            } : nil
+            scene(active: city, at: context.date, sun: sun, field: field)
                 .overlay(alignment: .bottomLeading) {
                     if let city {
-                        GlobeSolarBadge(city: city, instant: context.date).equatable()
-                            .padding(5)
-                            .id(city.id)
-                            .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 3)))
-                            .allowsHitTesting(false)
+                        if layer == .daylight {
+                            GlobeSolarBadge(city: city, instant: context.date).equatable()
+                                .padding(5)
+                                .id(city.id)
+                                .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 3)))
+                                .allowsHitTesting(false)
+                        } else {
+                            GlobeWeatherBadge(layer: layer, city: city.name, field: field,
+                                              enabled: AppleWeatherService.entitled, failed: weatherFailed)
+                                .padding(5)
+                        }
                     }
+                }
+                .task(id: request) {
+                    if let request { await loadWeather(request.region) }
                 }
         }
         .task {
             metal = await Self.preparation.value
             preparing = false
             if metal != nil, let selected {
-                camera = camera.focused(on: selected)
+                camera = focusedCamera(on: selected)
             }
         }
         .onReceive(swipes, perform: orbitWithTrackpad)
-        .onReceive(input.events, perform: pinch)
+        .onReceive(input.globePinches, perform: pinch)
+        .onChange(of: location.coordinate) { _ in
+            guard followsHome else { return }
+            transition(to: overview(sun: SolarPosition(at: .now)))
+        }
         .onReceive(focusRequests) { focusRequest in
             guard focusRequest.tactile || (dragStart == nil && pinchStart == nil) else { return }
             focus(on: focusRequest.city, withFeedback: focusRequest.tactile)
@@ -101,15 +137,26 @@ struct DaylightMapView: View {
         .onDisappear { stopCameraMotion() }
     }
 
-    private func scene(active: WorldClockLocation?, at date: Date, sun: SolarPosition) -> some View {
+    private func loadWeather(_ region: WeatherRegion) async {
+        weatherFailed = false
+        do {
+            let loaded = try await AppleWeatherService.shared.field(for: region)
+            if !Task.isCancelled { weather = loaded }
+        } catch {
+            if !Task.isCancelled { weatherFailed = true }
+        }
+    }
+
+    private func scene(active: WorldClockLocation?, at date: Date, sun: SolarPosition,
+                       field: AppleWeatherField?) -> some View {
         let shape = RoundedRectangle(cornerRadius: 7)
 
         return ZStack(alignment: .topTrailing) {
             if let metal {
                 GlobeScene(
-                    camera: camera, sun: sun, resources: metal, selectedID: active?.id,
+                    camera: camera, sun: sun, resources: metal, layer: layer, weather: field, selectedID: active?.id,
                     select: { location in focus(on: location, withFeedback: true) },
-                    input: input,
+                    input: input, devicePlace: location.place,
                     zoomIn: { point, size in zoom(by: 1.52, around: point, in: size) }
                 )
                 .simultaneousGesture(orbitGesture)
@@ -123,7 +170,7 @@ struct DaylightMapView: View {
                     let mapHeight = geometry.size.width / 2
                     ZStack {
                         Image(decorative: image, scale: 2).resizable()
-                        ForEach(WorldClockLocation.locations) { location in
+                        ForEach(WorldClockLocation.locations + [location.place].compactMap { $0 }) { location in
                             GlobePin(selected: location.id == active?.id)
                                 .position(x: (location.longitude + 180) / 360 * geometry.size.width,
                                           y: (90 - location.latitude) / 180 * mapHeight)
@@ -143,24 +190,19 @@ struct DaylightMapView: View {
         .frame(height: 221)
         .background(palette.track, in: shape)
         .overlay(alignment: .topTrailing) {
-            VStack(spacing: 2) {
-                globeControl("ellipsis", label: "Options", action: showOptions)
-                if metal != nil {
-                    globeControl("arrow.counterclockwise", label: "Reset globe view") {
+            globeControl("ellipsis", label: "Options") {
+                showOptions(GlobeMenu(
+                    reset: metal == nil ? nil : {
                         selected = nil
-                        transition(to: .overview(sun: sun))
+                        followsHome = true
+                        transition(to: overview(sun: sun))
                         feedback(.alignment)
+                    },
+                    layer: layer,
+                    selectLayer: metal == nil ? nil : { choice in
+                        selectLayer(choice, for: active, sun: sun)
                     }
-                    globeControl("plus", label: "Zoom in") { zoom(by: 1.30) }
-                    globeControl("minus", label: "Zoom out") { zoom(by: 1 / 1.30) }
-                    Text("\(camera.zoom, specifier: "%.1f")×")
-                        .font(.system(size: 9, weight: .semibold).monospacedDigit())
-                        .foregroundStyle(.white.opacity(0.86))
-                        .padding(.horizontal, 3)
-                        .frame(height: 16)
-                        .background(Color(white: 0.12).opacity(0.88), in: RoundedRectangle(cornerRadius: 4))
-                        .accessibilityLabel("Globe zoom \(camera.zoom, specifier: "%.1f") times")
-                }
+                ))
             }
             .padding(5)
         }
@@ -187,6 +229,7 @@ struct DaylightMapView: View {
             .onChanged { drag in
                 guard pinchStart == nil else { return }
                 if dragStart == nil {
+                    followsHome = false
                     stopCameraMotion()
                     dragStart = camera
                 }
@@ -216,7 +259,7 @@ struct DaylightMapView: View {
             }
     }
 
-    private func pinch(_ event: GlobePinch) {
+    private func pinch(_ event: PopupPinch) {
         if event.phase.contains(.cancelled) {
             if let pinchStart { transition(to: pinchStart) }
             pinchStart = nil
@@ -231,6 +274,7 @@ struct DaylightMapView: View {
 
     private func magnify(_ factor: CGFloat, around point: CGPoint, in size: CGSize) {
         if pinchStart == nil {
+            followsHome = false
             stopCameraMotion()
             dragStart = nil
             dragSample = nil
@@ -238,7 +282,7 @@ struct DaylightMapView: View {
             pinchStart = camera
         }
         if let pinchStart {
-            camera = pinchStart.magnified(by: factor, around: point, in: size, elastic: !reduceMotion)
+            camera = pinchStart.magnified(by: factor, around: point, in: size, elastic: !reduceMotion, maximumZoom: zoomLimit)
         }
     }
 
@@ -247,11 +291,11 @@ struct DaylightMapView: View {
         pinchStart = nil
 
         let zoom = camera.zoom
-        let overview = GlobeCamera.overviewZoom
+        let overview = hasWeatherView ? WeatherRegion.mapZoom : GlobeCamera.overviewZoom
         let target = abs(zoom - overview) < 0.045
-            ? overview : min(GlobeCamera.maximumZoom, max(GlobeCamera.minimumZoom, zoom))
+            ? overview : min(zoomLimit, max(GlobeCamera.minimumZoom, zoom))
         if abs(zoom - target) > 0.001 {
-            transition(to: camera.magnified(by: target / zoom, around: point, in: size))
+            transition(to: camera.magnified(by: target / zoom, around: point, in: size, maximumZoom: zoomLimit))
             feedback(.levelChange)
         }
     }
@@ -267,6 +311,7 @@ struct DaylightMapView: View {
         }
 
         if motion.started {
+            followsHome = false
             stopCameraMotion()
             trackpadStart = camera
         }
@@ -284,11 +329,12 @@ struct DaylightMapView: View {
     }
 
     private func focus(on location: WorldClockLocation, withFeedback: Bool) {
+        followsHome = false
         withAnimation(reduceMotion ? nil : .easeOut(duration: 0.22)) {
             selected = location
         }
         if metal != nil {
-            let target = camera.focused(on: location)
+            let target = focusedCamera(on: location)
             if reduceMotion {
                 stopCameraMotion()
                 camera = target
@@ -347,10 +393,33 @@ struct DaylightMapView: View {
     }
 
     private func zoom(by factor: Double, around point: CGPoint? = nil, in size: CGSize = .zero) {
-        let destination = camera.magnified(by: factor, around: point, in: size)
+        let destination = camera.magnified(by: factor, around: point, in: size, maximumZoom: zoomLimit)
         guard camera.zoom != destination.zoom else { return }
+        followsHome = false
         transition(to: destination)
         feedback(.levelChange)
+    }
+
+    private func selectLayer(_ choice: GlobeLayer, for city: WorldClockLocation?, sun: SolarPosition) {
+        let wasWeather = hasWeatherView
+        layer = choice
+        if choice == .daylight, wasWeather {
+            transition(to: selected.map { camera.focused(on: $0) } ?? overview(sun: sun))
+        } else if hasWeatherView, !wasWeather, let city {
+            transition(to: focusedCamera(on: city))
+        }
+    }
+
+    private func focusedCamera(on city: WorldClockLocation) -> GlobeCamera {
+        var target = camera.focused(on: city)
+        if hasWeatherView { target.zoom = WeatherRegion.mapZoom }
+        return target
+    }
+
+    private func overview(sun: SolarPosition) -> GlobeCamera {
+        var target = GlobeCamera.overview(sun: sun, home: location.place ?? WorldClockLocation.localOrDefault)
+        if hasWeatherView { target.zoom = WeatherRegion.mapZoom }
+        return target
     }
 
     private func feedback(_ pattern: NSHapticFeedbackManager.FeedbackPattern) {
@@ -362,19 +431,22 @@ private struct GlobeScene: View {
     let camera: GlobeCamera
     let sun: SolarPosition
     let resources: GlobeMetalRenderer.Resources
+    let layer: GlobeLayer
+    let weather: AppleWeatherField?
     let selectedID: String?
     let select: (WorldClockLocation) -> Void
 
     let input: PopupInput
+    let devicePlace: WorldClockLocation?
     let zoomIn: (CGPoint, CGSize) -> Void
 
     var body: some View {
         GeometryReader { geometry in
-            let pins = WorldClockLocation.locations.compactMap { location in
+            let pins = (WorldClockLocation.locations + [devicePlace].compactMap { $0 }).compactMap { location in
                 camera.project(location, in: geometry.size).map { Pin(location: location, point: $0) }
             }
             ZStack {
-                GlobeMetalView(camera: camera, sun: sun, resources: resources)
+                GlobeMetalView(camera: camera, sun: sun, resources: resources, layer: layer, weather: weather)
                     .allowsHitTesting(false)
 
                 ForEach(pins) { pin in

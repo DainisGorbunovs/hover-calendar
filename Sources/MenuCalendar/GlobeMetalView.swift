@@ -5,6 +5,8 @@ struct GlobeMetalView: NSViewRepresentable {
     let camera: GlobeCamera
     let sun: SolarPosition
     let resources: GlobeMetalRenderer.Resources
+    let layer: GlobeLayer
+    let weather: AppleWeatherField?
 
     func makeCoordinator() -> GlobeMetalRenderer {
         GlobeMetalRenderer(resources: resources)
@@ -14,6 +16,7 @@ struct GlobeMetalView: NSViewRepresentable {
         let view = MTKView(frame: .zero, device: resources.device)
         view.colorPixelFormat = .bgra8Unorm_srgb
         view.clearColor = MTLClearColor(red: 0.003, green: 0.005, blue: 0.012, alpha: 1)
+        view.preferredFramesPerSecond = 30
         view.isPaused = true
         view.enableSetNeedsDisplay = true
         view.delegate = context.coordinator
@@ -23,6 +26,10 @@ struct GlobeMetalView: NSViewRepresentable {
     func updateNSView(_ view: MTKView, context: Context) {
         context.coordinator.camera = camera
         context.coordinator.sun = sun
+        context.coordinator.setWeather(weather, layer: layer)
+        let animated = layer == .wind && weather != nil && !context.environment.accessibilityReduceMotion
+        context.coordinator.animateWind = animated
+        if view.isPaused == animated { view.isPaused = !animated }
         view.needsDisplay = true
     }
 }
@@ -36,10 +43,21 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
         let day: MTLTexture
         let night: MTLTexture
         let clouds: MTLTexture
+        let emptyWeather: MTLTexture
+        let colorRamps: MTLTexture
 
         init?(dayURL: URL, nightURL: URL, cloudURL: URL) {
             guard let device = MTLCreateSystemDefaultDevice(),
-                  let queue = device.makeCommandQueue() else { return nil }
+                  let queue = device.makeCommandQueue(),
+                  let emptyWeather = device.makeTexture(descriptor: .texture2DDescriptor(
+                    pixelFormat: .rgba16Unorm, width: 1, height: 1, mipmapped: false)),
+                  let colorRamps = Self.makeColorRamps(device: device)
+            else { return nil }
+            self.emptyWeather = emptyWeather
+            self.colorRamps = colorRamps
+            var zero = SIMD4<UInt16>.zero
+            emptyWeather.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0,
+                                 withBytes: &zero, bytesPerRow: MemoryLayout<SIMD4<UInt16>>.stride)
             do {
                 let library = try device.makeLibrary(source: GlobeMetalRenderer.shader, options: nil)
                 let descriptor = MTLRenderPipelineDescriptor()
@@ -63,11 +81,49 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
                 return nil
             }
         }
+
+        /// One row of colour per weather layer, indexed by `GlobeLayer.rawValue`.
+        ///
+        /// Each row resamples that layer's ramp across the same value range the
+        /// sample texture encodes, so the shader can turn an encoded reading
+        /// straight into a colour with a single lookup.
+        private static func makeColorRamps(device: MTLDevice) -> MTLTexture? {
+            let width = 256
+            let rows = GlobeLayer.allCases.count
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: .rgba8Unorm_srgb, width: width, height: rows, mipmapped: false)
+            guard let texture = device.makeTexture(descriptor: descriptor) else { return nil }
+
+            var pixels = [UInt8](repeating: 0, count: width * rows * 4)
+            for layer in GlobeLayer.allCases {
+                guard let stops = layer.colorStops else { continue }
+                for column in 0..<width {
+                    let position = Double(column) / Double(width - 1)
+                    let color = WeatherColorScale.color(in: stops, at: layer.value(at: position))
+                    let offset = (layer.rawValue * width + column) * 4
+                    pixels[offset] = UInt8((color.r * 255).rounded())
+                    pixels[offset + 1] = UInt8((color.g * 255).rounded())
+                    pixels[offset + 2] = UInt8((color.b * 255).rounded())
+                    pixels[offset + 3] = UInt8((color.a * 255).rounded())
+                }
+            }
+            pixels.withUnsafeBytes { bytes in
+                if let address = bytes.baseAddress {
+                    texture.replace(region: MTLRegionMake2D(0, 0, width, rows), mipmapLevel: 0,
+                                    withBytes: address, bytesPerRow: width * 4)
+                }
+            }
+            return texture
+        }
     }
 
     var camera: GlobeCamera?
     var sun: SolarPosition?
+    var animateWind = false
     private let resources: Resources
+    private var weatherTexture: MTLTexture?
+    private var weatherKey: (region: WeatherRegion, date: Date)?
+    private var weatherLayer = GlobeLayer.daylight
 
     private struct Uniforms {
         var front: SIMD4<Float>
@@ -75,10 +131,37 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
         var north: SIMD4<Float>
         var sun: SIMD4<Float>
         var viewport: SIMD4<Float>
+        var weatherRegion: SIMD4<Float>
+        var weatherState: SIMD4<Float>
     }
 
     init(resources: Resources) {
         self.resources = resources
+    }
+
+    func setWeather(_ field: AppleWeatherField?, layer: GlobeLayer) {
+        weatherLayer = layer
+        guard let field, layer != .daylight else {
+            weatherTexture = nil
+            weatherKey = nil
+            return
+        }
+        guard weatherKey?.region != field.region || weatherKey?.date != field.date else { return }
+        let side = WeatherRegion.side
+        guard field.samples.count == side * side,
+              let texture = resources.device.makeTexture(descriptor: .texture2DDescriptor(
+                pixelFormat: .rgba16Unorm, width: side, height: side, mipmapped: false))
+        else { return }
+
+        let values = field.samples.flatMap(\.textureChannels)
+        values.withUnsafeBytes { bytes in
+            if let address = bytes.baseAddress {
+                texture.replace(region: MTLRegionMake2D(0, 0, side, side), mipmapLevel: 0,
+                                withBytes: address, bytesPerRow: side * 4 * MemoryLayout<UInt16>.stride)
+            }
+        }
+        weatherTexture = texture
+        weatherKey = (field.region, field.date)
     }
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
@@ -94,12 +177,21 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
         let solarLat = Float(sun.latitude) * .pi / 180
         let solarLon = Float(sun.longitude) * .pi / 180
         let diameter = Float(2 * GlobeCamera.radius(in: view.drawableSize, zoom: camera.zoom))
+        let region = weatherKey?.region
+        let weatherBounds = region.map {
+            SIMD4(Float($0.north), Float($0.west), Float($0.latitudeSpan), Float($0.longitudeSpan))
+        } ?? .zero
+        let weatherTime = animateWind ? ProcessInfo.processInfo.systemUptime.truncatingRemainder(dividingBy: 3600) : 0
+        let drawnLayer = weatherTexture == nil ? GlobeLayer.daylight : weatherLayer
         var uniforms = Uniforms(
             front: [cos(lat) * cos(lon), cos(lat) * sin(lon), sin(lat), 0],
             east: [-sin(lon), cos(lon), 0, 0],
             north: [-sin(lat) * cos(lon), -sin(lat) * sin(lon), cos(lat), 0],
             sun: [cos(solarLat) * cos(solarLon), cos(solarLat) * sin(solarLon), sin(solarLat), 0],
-            viewport: [Float(view.drawableSize.width) / diameter, Float(view.drawableSize.height) / diameter, .pi * diameter, 0]
+            viewport: [Float(view.drawableSize.width) / diameter, Float(view.drawableSize.height) / diameter, .pi * diameter, 0],
+            weatherRegion: weatherBounds,
+            weatherState: [Float(drawnLayer.rawValue), Float(weatherTime),
+                           Float(drawnLayer.overlayOpacity), Float(GlobeLayer.allCases.count)]
         )
 
         encoder.setRenderPipelineState(resources.pipeline)
@@ -107,6 +199,8 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
         encoder.setFragmentTexture(resources.day, index: 0)
         encoder.setFragmentTexture(resources.night, index: 1)
         encoder.setFragmentTexture(resources.clouds, index: 2)
+        encoder.setFragmentTexture(weatherTexture ?? resources.emptyWeather, index: 3)
+        encoder.setFragmentTexture(resources.colorRamps, index: 4)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         encoder.endEncoding()
         buffer.present(drawable)
@@ -123,7 +217,7 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
     };
 
     struct Uniforms {
-        float4 front, east, north, sun, viewport;
+        float4 front, east, north, sun, viewport, weatherRegion, weatherState;
     };
 
     vertex Vertex globeVertex(uint index [[vertex_id]]) {
@@ -137,11 +231,60 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
                       0.5 - asin(clamp(normal.z, -1.0, 1.0)) / pi);
     }
 
+    float4 weatherColor(float2 earth, constant Uniforms& globe, texture2d<float> weather,
+                        texture2d<float> ramps) {
+        float latitude = 90.0 - earth.y * 180.0;
+        float longitude = earth.x * 360.0 - 180.0;
+        float offset = fmod(longitude - globe.weatherRegion.y + 360.0, 360.0);
+        float2 uv = float2(offset / globe.weatherRegion.w, (globe.weatherRegion.x - latitude) / globe.weatherRegion.z);
+        if (any(uv < 0.0) || any(uv > 1.0)) { return float4(0.0); }
+
+        // Map the grid boundary to the centers of its first and last samples.
+        constexpr sampler field(address::clamp_to_edge, filter::linear);
+        float2 size = float2(weather.get_width(), weather.get_height());
+        float4 reading = weather.sample(field, (uv * (size - 1.0) + 0.5) / size);
+        float coverage = smoothstep(0.0, 0.06, min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y)));
+
+        // One row of the ramp texture per layer; sRGB sampling returns linear colour.
+        constexpr sampler ramp(address::clamp_to_edge, filter::linear);
+        float layer = globe.weatherState.x;
+        float row = (layer + 0.5) / max(globe.weatherState.w, 1.0);
+
+        float position;
+        float streak = 0.0;
+        if (layer == 3.0) {
+            float2 velocity = reading.ba * 360.0 - 180.0;
+            float speed = length(velocity);
+            position = min(speed / 120.0, 1.0);
+
+            float2 heading = float2(velocity.x, -velocity.y) / max(speed, 0.001);
+            float2 grid = uv * float2(24.0, 19.0);
+            float2 cell = floor(grid);
+            float2 offsetInCell = fract(grid) - 0.5;
+            float sideways = abs(dot(offsetInCell, float2(-heading.y, heading.x)));
+            float random = fract(sin(dot(cell, float2(12.9898, 78.233))) * 43758.5453);
+            float drive = globe.weatherState.y * min(speed / 120.0, 1.5);
+            float pulse = smoothstep(0.32, 0.5,
+                                     0.5 - abs(fract(dot(offsetInCell, heading) - drive + random) - 0.5));
+            streak = (1.0 - smoothstep(0.025, 0.08, sideways)) * pulse
+                * smoothstep(1.0, 8.0, speed) * (1.0 - smoothstep(0.27, 0.49, length(offsetInCell)));
+        } else {
+            position = layer == 1.0 ? reading.r : reading.g;
+        }
+
+        float4 swatch = ramps.sample(ramp, float2(position, row));
+        float3 color = mix(swatch.rgb, float3(0.63, 0.91, 1.0), streak);
+        float opacity = min(1.0, swatch.a * globe.weatherState.z * (1.0 + 0.5 * streak));
+        return float4(color, opacity * coverage);
+    }
+
     fragment float4 globeFragment(Vertex input [[stage_in]],
                                   constant Uniforms& globe [[buffer(0)]],
                                   texture2d<float> day [[texture(0)]],
                                   texture2d<float> night [[texture(1)]],
-                                  texture2d<float> clouds [[texture(2)]]) {
+                                  texture2d<float> clouds [[texture(2)]],
+                                  texture2d<float> weather [[texture(3)]],
+                                  texture2d<float> ramps [[texture(4)]]) {
         constexpr sampler imagery(s_address::repeat, t_address::clamp_to_edge,
                                    min_filter::linear, mag_filter::linear, mip_filter::linear);
         const float cloudRadius = 1.009;
@@ -205,7 +348,12 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
                                 float3(0.88, 0.94, 1.04) * (0.33 + 0.67 * sqrt(saturate(cloudSun))),
                                 cloudLight);
         float edge = 1.0 - smoothstep(cloudRadius - edgeWidth, cloudRadius + edgeWidth, distance);
-        return float4(mix(scene, cloudColor, coverage * edge), 1.0);
+        scene = mix(scene, cloudColor, coverage * edge);
+        if (globe.weatherState.x > 0.0 && distance < 1.0) {
+            float4 weatherLayer = weatherColor(uv, globe, weather, ramps);
+            scene = mix(scene, weatherLayer.rgb, weatherLayer.a * silhouette);
+        }
+        return float4(scene, 1.0);
     }
     """
 }

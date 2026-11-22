@@ -13,9 +13,9 @@ final class CalendarPanel: NSPanel {
     private var tracker = TrackpadMotion.Tracker()
     private let input = PopupInput()
 
-    init(showOptions: @escaping () -> Void) {
+    init(location: LocalGlobeLocation, showOptions: @escaping (GlobeMenu) -> Void) {
         let view = CalendarView(showOptions: showOptions, calendarSwipes: calendarSwipes.eraseToAnyPublisher(),
-                                globeSwipes: globeSwipes.eraseToAnyPublisher(), input: input)
+                                globeSwipes: globeSwipes.eraseToAnyPublisher(), input: input, location: location)
         let hosting = CalendarHostingView(rootView: view)
         let bounds = CGRect(origin: .zero, size: hosting.fittingSize)
         super.init(contentRect: bounds, styleMask: [.borderless, .nonactivatingPanel],
@@ -29,6 +29,7 @@ final class CalendarPanel: NSPanel {
         backgroundColor = .clear
         isOpaque = false
         hasShadow = true
+        acceptsMouseMovedEvents = true
         level = .floating
         hidesOnDeactivate = false
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
@@ -47,7 +48,7 @@ final class CalendarPanel: NSPanel {
         }
     }
 
-    func updateGlobePointer(_ point: CGPoint) {
+    func updatePointer(_ point: CGPoint) {
         input.updatePointer(point)
     }
 
@@ -112,6 +113,7 @@ final class CalendarPanel: NSPanel {
 
 private final class CalendarHostingView: NSHostingView<CalendarView> {
     private let input: PopupInput
+    private var pointerTracking: NSTrackingArea?
 
     required init(rootView: CalendarView) {
         input = rootView.input
@@ -123,6 +125,39 @@ private final class CalendarHostingView: NSHostingView<CalendarView> {
         return nil
     }
 
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(visibleRect, cursor: .arrow)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let pointerTracking { removeTrackingArea(pointerTracking) }
+        let tracking = NSTrackingArea(rect: .zero,
+                                      options: [.activeAlways, .inVisibleRect, .cursorUpdate, .mouseEnteredAndExited],
+                                      owner: self, userInfo: nil)
+        addTrackingArea(tracking)
+        pointerTracking = tracking
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        updateCursor(at: event.locationInWindow)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        updateCursor(at: event.locationInWindow)
+    }
+
+    private func updateCursor(at point: NSPoint) {
+        if let editor = window?.firstResponder as? NSTextView, editor.isFieldEditor,
+           editor.bounds.contains(editor.convert(point, from: nil)) {
+            NSCursor.iBeam.set()
+        } else {
+            NSCursor.arrow.set()
+        }
+    }
+
     override func touchesBegan(with event: NSEvent) {
         if !input.observeTouches(event, in: self) { super.touchesBegan(with: event) }
     }
@@ -132,10 +167,10 @@ private final class CalendarHostingView: NSHostingView<CalendarView> {
     }
 
     override func touchesEnded(with event: NSEvent) {
-        if !input.observeTouches(event, in: self) { super.touchesEnded(with: event) }
+        if !input.observeTouches(event, in: self, ending: true) { super.touchesEnded(with: event) }
     }
 
     override func touchesCancelled(with event: NSEvent) {
-        if !input.observeTouches(event, in: self, cancelled: true) { super.touchesCancelled(with: event) }
+        if !input.observeTouches(event, in: self, ending: true, cancelled: true) { super.touchesCancelled(with: event) }
     }
 }

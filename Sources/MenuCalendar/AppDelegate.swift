@@ -1,8 +1,10 @@
 import AppKit
+import CoreLocation
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let clockRegion = ClockHoverRegion()
+    private let location = LocalGlobeLocation()
     private let openDelay = 0.26
     private let closeDelay = 0.25
 
@@ -12,6 +14,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var blockedAnchor: CGRect?
     private var leftAt: TimeInterval?
     private var menuIsOpen = false
+    private var resetGlobeAction: (() -> Void)?
+    private var globeLayerAction: ((GlobeLayer) -> Void)?
 
     private var timer: Timer?
     private var globalMonitor: Any?
@@ -54,7 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let now = ProcessInfo.processInfo.systemUptime
         let point = NSEvent.mouseLocation
         if let anchor, let panel {
-            panel.updateGlobePointer(point)
+            panel.updatePointer(point)
             if ClockHoverRegion.contains(point, in: anchor) || panel.frame.contains(point) {
                 leftAt = nil
             } else if let leftAt {
@@ -96,7 +100,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(CGPoint(x: frame.midX, y: frame.midY)) })
         else { return }
 
-        let panel = CalendarPanel(showOptions: { [weak self] in self?.showOptions() })
+        location.refresh()
+        let panel = CalendarPanel(location: location, showOptions: { [weak self] options in self?.showOptions(options) })
         let size = panel.frame.size
         let usable = screen.visibleFrame
         let x = min(max(frame.maxX - size.width, usable.minX + 8), usable.maxX - size.width - 8)
@@ -122,8 +127,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         dismiss()
     }
 
-    private func showOptions() {
+    @objc private func resetGlobe() {
+        resetGlobeAction?()
+    }
+
+    @objc private func useMyLocation() {
+        switch location.authorization {
+        case .denied, .restricted:
+            let alert = NSAlert()
+            alert.messageText = "Allow location access for Menu Calendar"
+            alert.informativeText = "In System Settings, go to Privacy & Security → Location Services and allow Menu Calendar."
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+        case .notDetermined where !NSApp.isActive:
+            resetGlobeAction?()
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            configuration.createsNewApplicationInstance = false
+            configuration.addsToRecentItems = false
+            NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { [weak self] _, error in
+                guard error == nil else { return }
+                Task { @MainActor in self?.location.requestAccess() }
+            }
+        default:
+            resetGlobeAction?()
+            location.requestAccess()
+        }
+    }
+
+    @objc private func changeGlobeLayer(_ sender: NSMenuItem) {
+        if let layer = GlobeLayer(rawValue: sender.tag) { globeLayerAction?(layer) }
+    }
+
+    private func showOptions(_ options: GlobeMenu) {
         let menu = NSMenu()
+        resetGlobeAction = options.reset
+        globeLayerAction = options.selectLayer
+        defer {
+            resetGlobeAction = nil
+            globeLayerAction = nil
+        }
+        if options.selectLayer != nil {
+            let layerMenu = NSMenu()
+            for layer in GlobeLayer.allCases {
+                let item = layerMenu.addItem(withTitle: layer.title, action: #selector(changeGlobeLayer(_:)), keyEquivalent: "")
+                item.target = self
+                item.tag = layer.rawValue
+                item.state = layer == options.layer ? .on : .off
+            }
+            let layers = menu.addItem(withTitle: "Weather Layers", action: nil, keyEquivalent: "")
+            layers.submenu = layerMenu
+        }
+        if options.reset != nil {
+            let reset = menu.addItem(withTitle: "Reset Globe", action: #selector(Self.resetGlobe), keyEquivalent: "")
+            reset.target = self
+        }
+        let locationTitle = location.updatesAllowed ? "Center on My Location" : "Use My Location…"
+        let useLocation = menu.addItem(withTitle: locationTitle, action: #selector(Self.useMyLocation), keyEquivalent: "")
+        useLocation.target = self
+        menu.addItem(.separator())
+
         let quit = menu.addItem(withTitle: "Quit Menu Calendar", action: #selector(NSApplication.terminate(_:)),
                                 keyEquivalent: "q")
         quit.target = NSApp

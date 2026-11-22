@@ -22,5 +22,11 @@
     <string>13.0</string>
     <key>LSUIElement</key>
     <true/>
+    <key>NSLocationUsageDescription</key>
+    <string>Menu Calendar uses your approximate location to center the globe and show local daylight times.</string>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>Menu Calendar uses your approximate location to center the globe and show local daylight times.</string>
+    <key>NSLocationDefaultAccuracyReduced</key>
+    <true/>
 </dict>
 </plist>

@@ -3,10 +3,11 @@ import Combine
 import SwiftUI
 
 struct CalendarView: View {
-    let showOptions: () -> Void
+    let showOptions: (GlobeMenu) -> Void
     let calendarSwipes: AnyPublisher<TrackpadMotion, Never>
     let globeSwipes: AnyPublisher<TrackpadMotion, Never>
     let input: PopupInput
+    let location: LocalGlobeLocation
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -18,7 +19,10 @@ struct CalendarView: View {
     @State private var cityFocus = PassthroughSubject<GlobeFocusRequest, Never>()
     @State private var hoveredDay: Date?
     @State private var selectedDay: Date?
-    @State private var showingMonthChooser = false
+    @State private var calendarDetail = CalendarDetail.days
+    @State private var chooserYear = Date.now
+    @State private var pinchPreview: CGFloat = 1
+    @State private var pinchAnchor = UnitPoint.center
     @State private var calendarRevision = 0
     @State private var showingHolidayRegions = false
     @AppStorage("HolidayRegion") private var holidayRegion = HolidayRegion.localDefault
@@ -28,6 +32,7 @@ struct CalendarView: View {
     private let dayColumnWidth: CGFloat = 36
 
     private var calendarWidth: CGFloat { weekColumnWidth + 7 * dayColumnWidth }
+    private var showingMonthChooser: Bool { calendarDetail != .days }
 
     private var palette: CalendarPalette {
         colorScheme == .dark ? .dark : .light
@@ -39,17 +44,13 @@ struct CalendarView: View {
         VStack(spacing: 7) {
             HStack(alignment: .top, spacing: 8) {
                 DaylightMapView(palette: palette, selected: $mapLocation, swipes: globeSwipes,
-                                input: input, focusRequests: cityFocus.eraseToAnyPublisher(), showOptions: showOptions)
+                                input: input, location: location, focusRequests: cityFocus.eraseToAnyPublisher(), showOptions: showOptions)
                     .frame(width: 270)
 
                 TimelineView(.everyMinute) { context in
                     monthView(month(at: monthIndex), today: context.date)
                 }
                 .frame(width: calendarWidth, height: 221, alignment: .top)
-                .background {
-                    PopupSurface(input: input, kind: .calendar)
-                        .allowsHitTesting(false)
-                }
                 .overlay {
                     if showingMonthChooser {
                         Button(action: closeMonthChooser) {
@@ -62,9 +63,9 @@ struct CalendarView: View {
                 }
                 .overlay(alignment: .topLeading) {
                     if showingMonthChooser {
-                        MonthChooser(calendar: calendar, palette: palette, visibleMonth: month(at: monthIndex).start,
-                                     choose: { jump(to: $0) }, close: closeMonthChooser)
+                        chooser
                             .padding(3)
+                            .id(calendarDetail)
                             .transition(reduceMotion ? .identity : .scale(scale: 0.94, anchor: .topLeading).combined(with: .opacity))
                     }
                 }
@@ -72,6 +73,12 @@ struct CalendarView: View {
                     if showingHolidayRegions {
                         holidayRegions.padding(.bottom, 25)
                     }
+                }
+                .scaleEffect(pinchPreview, anchor: pinchAnchor)
+                .clipped()
+                .background {
+                    PopupSurface(input: input, kind: .calendar)
+                        .allowsHitTesting(false)
                 }
             }
 
@@ -84,6 +91,26 @@ struct CalendarView: View {
         .background(palette.surface, in: shape)
         .overlay { shape.strokeBorder(palette.outline, lineWidth: 0.75).allowsHitTesting(false) }
         .onReceive(calendarSwipes, perform: pageWithTrackpad)
+        .onReceive(input.calendarPinches, perform: pinchCalendar)
+    }
+
+    @ViewBuilder
+    private var chooser: some View {
+        switch calendarDetail {
+        case .days:
+            EmptyView()
+        case .months:
+            MonthChooser(calendar: calendar, palette: palette, visibleMonth: month(at: monthIndex).start,
+                         yearReference: $chooserYear, choose: { jump(to: $0) },
+                         showYears: { changeCalendarDetail(to: .years) }, close: closeMonthChooser)
+        case .years:
+            YearChooser(calendar: calendar, palette: palette, selectedYear: $chooserYear,
+                        choose: { date in
+                            chooserYear = date
+                            changeCalendarDetail(to: .months)
+                        },
+                        back: { changeCalendarDetail(to: .months) }, close: closeMonthChooser)
+        }
     }
 
     private func monthView(_ month: MonthGrid, today: Date) -> some View {
@@ -91,12 +118,8 @@ struct CalendarView: View {
         return VStack(spacing: 6) {
             HStack(spacing: 3) {
                 Button {
-                    hoveredDay = nil
-                    showingHolidayRegions = false
                     input.focusCalendarControls()
-                    withAnimation(reduceMotion ? nil : .spring(response: 0.24, dampingFraction: 0.82)) {
-                        showingMonthChooser = true
-                    }
+                    changeCalendarDetail(to: .months)
                 } label: {
                     HStack(spacing: 5) {
                         Text(month.title)
@@ -192,7 +215,7 @@ struct CalendarView: View {
             Spacer(minLength: 0)
 
             Button {
-                showingMonthChooser = false
+                calendarDetail = .days
                 showingHolidayRegions.toggle()
             } label: {
                 HStack(spacing: 3) {
@@ -411,10 +434,45 @@ struct CalendarView: View {
         }
     }
 
-    private func closeMonthChooser() {
-        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.14)) {
-            showingMonthChooser = false
+    private func pinchCalendar(_ event: PopupPinch) {
+        if event.phase.contains(.cancelled) {
+            resetPinchPreview()
+            return
         }
+        if event.phase.contains(.ended) {
+            let next = calendarDetail.afterPinch(scale: event.scale)
+            if next != calendarDetail {
+                changeCalendarDetail(to: next)
+                NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+            } else {
+                resetPinchPreview()
+            }
+        } else if !reduceMotion, event.size.width > 0, event.size.height > 0 {
+            pinchAnchor = UnitPoint(x: event.anchor.x / event.size.width, y: event.anchor.y / event.size.height)
+            pinchPreview = min(1.09, max(0.91, 1 + (event.scale - 1) * 0.38))
+        }
+    }
+
+    private func resetPinchPreview() {
+        withAnimation(reduceMotion ? nil : .spring(response: 0.24, dampingFraction: 0.84)) {
+            pinchPreview = 1
+        }
+    }
+
+    private func changeCalendarDetail(to detail: CalendarDetail) {
+        if calendarDetail == .days {
+            chooserYear = month(at: monthIndex).start
+        }
+        hoveredDay = nil
+        showingHolidayRegions = false
+        withAnimation(reduceMotion ? nil : .spring(response: 0.25, dampingFraction: 0.84)) {
+            pinchPreview = 1
+            calendarDetail = detail
+        }
+    }
+
+    private func closeMonthChooser() {
+        changeCalendarDetail(to: .days)
     }
 
     private func jump(to date: Date, selecting selection: Date? = nil) {
@@ -424,7 +482,7 @@ struct CalendarView: View {
             monthIndex = 0
             page = 0
             selectedDay = selection
-            showingMonthChooser = false
+            calendarDetail = .days
             calendarRevision += 1
         }
         NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)

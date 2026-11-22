@@ -7,12 +7,15 @@ struct GlobeCamera {
     var zoom: Double
 
     static let minimumZoom = 0.78
-    static let maximumZoom = 4.80
-    static let overviewZoom = 1.44
-    static let cityZoom = 2.18
+    static let maximumZoom = 7.20
+    static let overviewZoom = 2.20
+    static let cityZoom = 2.48
 
-    static func overview(sun: SolarPosition) -> Self {
-        Self(latitude: 19, longitude: sun.longitude - 68, zoom: overviewZoom)
+    static func overview(sun: SolarPosition, home: WorldClockLocation? = WorldClockLocation.localOrDefault) -> Self {
+        if let home {
+            return Self(latitude: min(82, max(-82, home.latitude)), longitude: home.longitude, zoom: overviewZoom)
+        }
+        return Self(latitude: 19, longitude: sun.longitude - 68, zoom: overviewZoom)
     }
 
     func focused(on location: WorldClockLocation) -> Self {
@@ -39,9 +42,9 @@ struct GlobeCamera {
     }
 
     func magnified(by factor: Double, around point: CGPoint? = nil, in size: CGSize = .zero,
-                   elastic: Bool = false) -> Self {
+                   elastic: Bool = false, maximumZoom: Double = Self.maximumZoom) -> Self {
         let requested = zoom * factor
-        let bounded = min(Self.maximumZoom, max(Self.minimumZoom, requested))
+        let bounded = min(maximumZoom, max(Self.minimumZoom, requested))
         let overflow = requested - bounded
         let target = bounded + (elastic ? 0.14 * overflow / (0.14 + abs(overflow)) : 0)
         let centered = Self(latitude: latitude, longitude: longitude, zoom: target)

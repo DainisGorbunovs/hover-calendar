@@ -1,12 +1,21 @@
 import Foundation
 
-struct WorldClockLocation: Identifiable {
+struct WorldClockLocation: Identifiable, Equatable {
     let name: String
     let timeZone: TimeZone
     let flag: String
     let latitude: Double
     let longitude: Double
-    var id: String { timeZone.identifier }
+    let id: String
+
+    init(name: String, timeZone: TimeZone, flag: String, latitude: Double, longitude: Double, id: String? = nil) {
+        self.name = name
+        self.timeZone = timeZone
+        self.flag = flag
+        self.latitude = latitude
+        self.longitude = longitude
+        self.id = id ?? timeZone.identifier
+    }
 
     static let locations = [
         ("London", "Europe/London", "🇬🇧", 51.5074, -0.1278),
@@ -19,6 +28,10 @@ struct WorldClockLocation: Identifiable {
         TimeZone(identifier: identifier).map {
             WorldClockLocation(name: name, timeZone: $0, flag: flag, latitude: latitude, longitude: longitude)
         }
+    }
+
+    static var localOrDefault: Self? {
+        locations.first { $0.id == TimeZone.autoupdatingCurrent.identifier } ?? locations.first
     }
 
     static func orderedByLocalTime(at instant: Date) -> [Self] {
