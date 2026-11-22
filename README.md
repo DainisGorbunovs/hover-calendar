@@ -50,7 +50,7 @@ Run `tools/extract-weather-color-scales.py` to rewrite `Sources/MenuCalendar/Wea
 
 Over the calendar, swipe horizontally with two fingers to pull the next or previous month into view. The page snaps into place when you commit the swipe.
 
-Over the globe, drag or use two fingers to orbit the Earth, then release to let it coast. Pinch over the globe to zoom into the spot beneath the pointer. The popup temporarily takes app focus while the pointer is over the calendar or globe and returns it when you move away. A double-click zooms into that spot too. Globe zoom goes up to 7.2×. Hover over the city control to open the picker, then pause on a name for a closer look, or click it to focus immediately. Choose **Reset Globe** in the options menu to return to the default 2.2× view. Pinch together to pull back for the full Earth.
+Over the globe, drag or use two fingers to orbit the Earth, then release to let it coast. Pinch over the globe to zoom into the spot beneath the pointer. The popup temporarily takes app focus while the pointer is over the calendar or globe and returns it when you move away. A double-click zooms into that spot too. Globe zoom goes up to 7.2×. Hover over the city control to open the picker, then pause on a name for a closer look, or click it to focus immediately. Choose **Reset Globe** in the options menu to return to the default 3.1× view. Pinch together to pull back for the full Earth.
 
 Supported Force Touch trackpads give a small tap when a month or city selection commits and when zoom snaps to its limits.
 
