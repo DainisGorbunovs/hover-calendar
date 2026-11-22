@@ -43,7 +43,9 @@ The globe stores each reading across exactly the range its scale covers, taken f
 
 Apple builds its wind colours in code rather than publishing them in that cache, so the wind ramp is this app's own. It is shaped like the others and can be replaced without touching the renderer.
 
-Run `tools/extract-weather-color-scales.py` to rewrite `Sources/MenuCalendar/WeatherColorScale.swift` from the current cache, or `--list` to print every scale it finds, including the air quality scales for twenty countries. The script only reads the cache; it fetches nothing and changes nothing outside this project.
+Run `just preview` to draw the globe and each weather overlay to PNGs under `.build/globe-previews`, using a made-up forecast that sweeps every scale from end to end. It drives the real renderer rather than a copy of it, so the colours it writes are the ones the popup draws, and it needs no WeatherKit entitlement.
+
+Run `just colour-scales` to rewrite `Sources/MenuCalendar/WeatherColorScale.swift` from the current cache, or `--list` to print every scale it finds, including the air quality scales for twenty countries. The script only reads the cache; it fetches nothing and changes nothing outside this project.
 
 
 ## Trackpad gestures
