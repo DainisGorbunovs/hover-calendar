@@ -5,8 +5,11 @@ struct GlobeWeatherBadge: View {
     let city: String
     let field: AppleWeatherField?
     let instant: Date
-    let enabled: Bool
+    let problem: AppleWeatherService.Problem?
     let failed: Bool
+
+    /// Where Apple asks WeatherKit data to be credited.
+    private static let legalAttribution = URL(string: "https://weatherkit.apple.com/legal-attribution.html")!
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 7)
@@ -30,7 +33,8 @@ struct GlobeWeatherBadge: View {
             }
             if let field {
                 scale
-                Text("Sampled forecast · \(instant.formatted(date: .omitted, time: .shortened))")
+                Text("\(field.coverage == .point ? "From Weather" : "Sampled forecast") · "
+                     + instant.formatted(date: .omitted, time: .shortened))
                     .font(.system(size: 8))
                     .foregroundStyle(.white.opacity(0.72))
                 if let attribution = field.attribution {
@@ -42,6 +46,10 @@ struct GlobeWeatherBadge: View {
                         }
                     }
                     .accessibilityLabel("Apple Weather data sources")
+                } else {
+                    Link(" Weather", destination: Self.legalAttribution)
+                        .font(.system(size: 8, weight: .medium))
+                        .accessibilityLabel("Apple Weather data sources")
                 }
             } else {
                 Text(status)
@@ -57,7 +65,9 @@ struct GlobeWeatherBadge: View {
     }
 
     private var status: String {
-        if !enabled { return "WeatherKit signing required" }
+        if case .placeNotTracked = problem {
+            return "Add \(city) in Weather to see it here"
+        }
         return failed ? "Apple Weather unavailable" : "Loading Apple Weather…"
     }
 

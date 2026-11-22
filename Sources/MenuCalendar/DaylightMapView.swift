@@ -31,6 +31,7 @@ struct DaylightMapView: View {
     @State private var followsHome = true
     @AppStorage("GlobeLayer") private var layer = GlobeLayer.daylight
     @State private var weather: AppleWeatherField?
+    @State private var weatherProblem: AppleWeatherService.Problem?
     @State private var weatherFailed = false
 
     private struct WeatherLoadKey: Hashable {
@@ -38,7 +39,7 @@ struct DaylightMapView: View {
         let quarterHour: Int
     }
 
-    private var hasWeatherView: Bool { layer != .daylight && AppleWeatherService.entitled }
+    private var hasWeatherView: Bool { layer != .daylight }
     private var zoomLimit: Double { hasWeatherView ? WeatherRegion.mapZoom : GlobeCamera.maximumZoom }
 
     private struct Textures {
@@ -82,7 +83,7 @@ struct DaylightMapView: View {
         let overview = GlobeCamera.overview(sun: SolarPosition(at: .now), home: location.place ?? WorldClockLocation.localOrDefault)
         var start = selected.wrappedValue.map { overview.focused(on: $0) } ?? overview
         let savedLayer = GlobeLayer(rawValue: UserDefaults.standard.integer(forKey: "GlobeLayer")) ?? .daylight
-        if savedLayer != .daylight, AppleWeatherService.entitled {
+        if savedLayer != .daylight {
             start.zoom = WeatherRegion.mapZoom
         }
         _camera = State(initialValue: start)
@@ -109,7 +110,7 @@ struct DaylightMapView: View {
                         } else {
                             GlobeWeatherBadge(layer: layer, city: city.name, field: field,
                                               instant: context.date,
-                                              enabled: AppleWeatherService.entitled, failed: weatherFailed)
+                                              problem: weatherProblem, failed: weatherFailed)
                                 .padding(5)
                         }
                     }
@@ -140,11 +141,14 @@ struct DaylightMapView: View {
 
     private func loadWeather(_ region: WeatherRegion) async {
         weatherFailed = false
+        weatherProblem = nil
         do {
             let loaded = try await AppleWeatherService.shared.field(for: region)
             if !Task.isCancelled { weather = loaded }
         } catch {
-            if !Task.isCancelled { weatherFailed = true }
+            guard !Task.isCancelled else { return }
+            weatherProblem = error as? AppleWeatherService.Problem
+            weatherFailed = true
         }
     }
 

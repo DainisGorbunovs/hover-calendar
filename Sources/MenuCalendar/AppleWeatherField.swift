@@ -159,9 +159,14 @@ struct AppleWeatherField: Sendable {
     /// span either side of now.
     static let frameLimit = 13
 
+    /// Whether the readings vary across the region, or are one place's
+    /// forecast standing in for all of it.
+    enum Coverage: Sendable { case grid, point }
+
     let region: WeatherRegion
     let frames: [WeatherFrame]
     let attribution: WeatherAttribution?
+    var coverage = Coverage.grid
 
     var date: Date { frames.first?.date ?? .distantPast }
 
@@ -207,9 +212,13 @@ actor AppleWeatherService {
         return SecTaskCopyValueForEntitlement(task, "com.apple.developer.weatherkit" as CFString, nil) as? Bool == true
     }()
 
-    private enum SamplingError: Error { case invalidReading }
+    enum Problem: Error {
+        case invalidReading
+        /// Without WeatherKit, a city only has weather if Weather tracks it.
+        case placeNotTracked
+    }
 
-    private var cache: [WeatherRegion: (field: AppleWeatherField, fetched: Date)] = [:]
+    private var cache: [WeatherRegion: (field: AppleWeatherField, fetched: Date, lifetime: TimeInterval)] = [:]
     private var requests: [WeatherRegion: Task<AppleWeatherField, Error>] = [:]
     private var attribution: WeatherAttribution?
 
@@ -219,17 +228,48 @@ actor AppleWeatherService {
     /// current while asking WeatherKit for a quarter as much.
     private static let cacheLifetime = 60.0 * 60
 
+    /// Reading the store costs nothing but a local query, and weatherd keeps
+    /// revising it, so look again far sooner.
+    private static let storeLifetime = 10.0 * 60
+
     func field(for region: WeatherRegion) async throws -> AppleWeatherField {
         let now = Date.now
-        cache = cache.filter { now.timeIntervalSince($0.value.fetched) < Self.cacheLifetime }
+        cache = cache.filter { now.timeIntervalSince($0.value.fetched) < $0.value.lifetime }
         if let existing = cache[region] { return existing.field }
+
+        guard Self.entitled else {
+            let field = try Self.storedField(for: region)
+            cache[region] = (field, .now, Self.storeLifetime)
+            return field
+        }
         if let running = requests[region] { return try await running.value }
 
         let running = Task { try await fetch(region) }
         requests[region] = running
         defer { requests[region] = nil }
         let field = try await running.value
-        cache[region] = (field, .now)
+        cache[region] = (field, .now, Self.cacheLifetime)
+        return field
+    }
+
+    /// Apple's forecast for the tracked place at the middle of the region,
+    /// standing in for the whole grid.
+    static func storedField(for region: WeatherRegion) throws -> AppleWeatherField {
+        guard let hours = AppleWeatherStore.hours(nearLatitude: region.latitude,
+                                                  longitude: region.longitude)
+        else { throw Problem.placeNotTracked }
+
+        let cells = WeatherRegion.side * WeatherRegion.side
+        let frames = hours.prefix(AppleWeatherField.frameLimit).map { hour in
+            let bearing = hour.windDirection * .pi / 180
+            let sample = WeatherSample(temperature: hour.temperature,
+                                       precipitation: hour.precipitation,
+                                       east: -sin(bearing) * hour.windSpeed,
+                                       north: -cos(bearing) * hour.windSpeed)
+            return WeatherFrame(date: hour.date, samples: Array(repeating: sample, count: cells))
+        }
+        var field = AppleWeatherField(region: region, frames: Array(frames), attribution: nil)
+        field.coverage = .point
         return field
     }
 

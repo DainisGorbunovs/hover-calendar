@@ -12,6 +12,7 @@ mkdir -p "$build_dir"
 swiftc -O \
     "$sources/WeatherColorScale.swift" \
     "$sources/AppleWeatherField.swift" \
+    "$sources/AppleWeatherStore.swift" \
     "$sources/WorldClockLocation.swift" \
     "$sources/SolarPosition.swift" \
     "$sources/GlobeCamera.swift" \

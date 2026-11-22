@@ -99,10 +99,12 @@ enum RenderGlobe {
             print(url.path)
         }
 
-        func render(_ name: String, camera: GlobeCamera, layer: GlobeLayer, at instant: Date) {
+        func render(_ name: String, camera: GlobeCamera, layer: GlobeLayer, at instant: Date,
+                    from source: AppleWeatherField? = nil) {
             renderer.camera = camera
+            renderer.sun = SolarPosition(at: instant)
             renderer.animateWind = layer == .wind
-            renderer.setWeather(layer == .daylight ? nil : field, at: instant, layer: layer)
+            renderer.setWeather(layer == .daylight ? nil : source ?? field, at: instant, layer: layer)
             guard let drawable = view.currentDrawable else {
                 FileHandle.standardError.write(Data("no drawable offscreen\n".utf8))
                 exit(2)
@@ -129,6 +131,27 @@ enum RenderGlobe {
                 render("weather-\(name)-\(percent).png", camera: weatherCamera, layer: layer,
                        at: base.addingTimeInterval(Double(percent) / 100 * 3600))
             }
+        }
+
+        // The same layers from Apple's live forecast, for the first world-clock
+        // city Weather tracks on this Mac, drawn the way the popup draws it.
+        let now = Date.now
+        let tracked = ([home] + WorldClockLocation.locations).lazy.compactMap { city in
+            (try? AppleWeatherService.storedField(for: WeatherRegion(around: city))).map { (city, $0) }
+        }.first
+        guard let (city, live) = tracked else {
+            print("no world-clock city is tracked by Weather; skipping the live renders")
+            return
+        }
+        let liveCamera = GlobeCamera(latitude: live.region.latitude, longitude: live.region.longitude,
+                                     zoom: WeatherRegion.mapZoom)
+        for layer in [GlobeLayer.temperature, .precipitation, .wind] {
+            let name = layer.title.replacingOccurrences(of: " ", with: "")
+            render("live-\(name).png", camera: liveCamera, layer: layer, at: now, from: live)
+        }
+        if let reading = live.center(at: now) {
+            print(String(format: "live: %@ %.1f °C, %.2f mm/h, wind %.0f km/h", city.name,
+                         reading.temperature, reading.precipitation, hypot(reading.east, reading.north)))
         }
     }
 }

@@ -124,6 +124,7 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
     private let resources: Resources
     private var weatherLayer = GlobeLayer.daylight
     private var weatherRegion: WeatherRegion?
+    private var weatherCoverage = AppleWeatherField.Coverage.grid
     /// One uploaded grid per forecast hour, kept while the region holds still.
     private var frameTextures: [Date: MTLTexture] = [:]
     /// The two hours the globe is drawing between, and how far across it sits.
@@ -152,9 +153,10 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
             weatherRegion = nil
             return
         }
-        if weatherRegion != field.region {
+        if weatherRegion != field.region || weatherCoverage != field.coverage {
             frameTextures.removeAll()
             weatherRegion = field.region
+            weatherCoverage = field.coverage
         }
         guard let earlier = texture(for: bracket.earlier),
               let later = texture(for: bracket.later) else {
@@ -212,7 +214,8 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
             weatherState: [Float(drawnLayer.rawValue), Float(weatherTime),
                            Float(drawnLayer.overlayOpacity), Float(GlobeLayer.allCases.count)],
             weatherScale: [Float(GlobeLayer.wind.domain.upperBound),
-                           Float(WeatherSample.windComponentLimit), blend?.progress ?? 0, 0]
+                           Float(WeatherSample.windComponentLimit), blend?.progress ?? 0,
+                           weatherCoverage == .point ? 1 : 0]
         )
 
         encoder.setRenderPipelineState(resources.pipeline)
@@ -271,6 +274,14 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
                              weatherLater.sample(field, grid),
                              globe.weatherScale.z);
         float coverage = smoothstep(0.0, 0.06, min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y)));
+        // One place's forecast is drawn as a halo around it, fading well
+        // before the region's edge, rather than as though it held across the
+        // whole region. The region is close to square on the ground, so a
+        // circle in its coordinates is close to a circle on the globe.
+        if (globe.weatherScale.w > 0.5) {
+            float reach = length((uv - 0.5) * 2.0);
+            coverage *= 1.0 - smoothstep(0.3, 0.95, reach);
+        }
 
         // One row of the ramp texture per layer; sRGB sampling returns linear colour.
         constexpr sampler ramp(address::clamp_to_edge, filter::linear);
