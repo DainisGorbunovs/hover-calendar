@@ -46,25 +46,46 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
         let clouds: MTLTexture
         let emptyWeather: MTLTexture
         let colorRamps: MTLTexture
+        /// Fades the previous wind trails, then draws particles' moves on top.
+        let trailFadePipeline: MTLRenderPipelineState
+        let particlePipeline: MTLRenderPipelineState
+        /// Stands in for the trails when no wind is drawn.
+        let emptyTrail: MTLTexture
 
         init?(dayURL: URL, nightURL: URL, cloudURL: URL) {
             guard let device = MTLCreateSystemDefaultDevice(),
                   let queue = device.makeCommandQueue(),
                   let emptyWeather = device.makeTexture(descriptor: .texture2DDescriptor(
                     pixelFormat: .rgba16Unorm, width: 1, height: 1, mipmapped: false)),
+                  let emptyTrail = device.makeTexture(descriptor: .texture2DDescriptor(
+                    pixelFormat: .r16Float, width: 1, height: 1, mipmapped: false)),
                   let colorRamps = Self.makeColorRamps(device: device)
             else { return nil }
             self.emptyWeather = emptyWeather
+            self.emptyTrail = emptyTrail
             self.colorRamps = colorRamps
             var zero = SIMD4<UInt16>.zero
             emptyWeather.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0,
                                  withBytes: &zero, bytesPerRow: MemoryLayout<SIMD4<UInt16>>.stride)
+            var noTrail: UInt16 = 0
+            emptyTrail.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0,
+                               withBytes: &noTrail, bytesPerRow: MemoryLayout<UInt16>.stride)
             do {
                 let library = try device.makeLibrary(source: GlobeMetalRenderer.shader, options: nil)
                 let descriptor = MTLRenderPipelineDescriptor()
                 descriptor.vertexFunction = library.makeFunction(name: "globeVertex")
                 descriptor.fragmentFunction = library.makeFunction(name: "globeFragment")
                 descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm_srgb
+
+                let fade = MTLRenderPipelineDescriptor()
+                fade.vertexFunction = library.makeFunction(name: "trailFadeVertex")
+                fade.fragmentFunction = library.makeFunction(name: "trailFadeFragment")
+                fade.colorAttachments[0].pixelFormat = .r16Float
+                let particles = MTLRenderPipelineDescriptor()
+                particles.vertexFunction = library.makeFunction(name: "particleVertex")
+                particles.fragmentFunction = library.makeFunction(name: "particleFragment")
+                particles.colorAttachments[0].pixelFormat = .r16Float
+
                 let loader = MTKTextureLoader(device: device)
                 let options: [MTKTextureLoader.Option: Any] = [
                     .origin: MTKTextureLoader.Origin.topLeft, .SRGB: true, .generateMipmaps: true
@@ -72,6 +93,8 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
                 self.device = device
                 self.queue = queue
                 pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
+                trailFadePipeline = try device.makeRenderPipelineState(descriptor: fade)
+                particlePipeline = try device.makeRenderPipelineState(descriptor: particles)
                 day = try loader.newTexture(URL: dayURL, options: options)
                 night = try loader.newTexture(URL: nightURL, options: options)
                 clouds = try loader.newTexture(URL: cloudURL, options: [
@@ -130,6 +153,14 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
     /// The two hours the globe is drawing between, and how far across it sits.
     private var blend: (earlier: MTLTexture, later: MTLTexture, progress: Float)?
 
+    /// Made the first time the wind layer is shown.
+    private lazy var particles: WindParticles? = WindParticles(resources: resources)
+    private var windField: WindField?
+    /// The field the particles were last scattered for. Their trails are
+    /// rebuilt when it changes, and carried on smoothly when only the hour does.
+    private var particleField: (region: WeatherRegion, coverage: AppleWeatherField.Coverage)?
+    private var lastParticleStep: TimeInterval?
+
     private struct Uniforms {
         var front: SIMD4<Float>
         var east: SIMD4<Float>
@@ -151,6 +182,8 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
             blend = nil
             frameTextures.removeAll()
             weatherRegion = nil
+            windField = nil
+            particleField = nil
             return
         }
         if weatherRegion != field.region || weatherCoverage != field.coverage {
@@ -164,6 +197,21 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
             return
         }
         blend = (earlier, later, Float(bracket.progress))
+
+        guard layer == .wind,
+              let wind = WindField(region: field.region, earlier: bracket.earlier,
+                                   later: bracket.later, progress: bracket.progress)
+        else {
+            windField = nil
+            particleField = nil
+            return
+        }
+        windField = wind
+        if particleField?.region != field.region || particleField?.coverage != field.coverage {
+            particles?.warmUp(through: wind)
+            particleField = (field.region, field.coverage)
+            lastParticleStep = nil
+        }
     }
 
     /// Uploads one forecast hour, reusing the grid if it is already on the GPU.
@@ -191,8 +239,28 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
     func draw(in view: MTKView) {
         guard let camera, let sun, let drawable = view.currentDrawable,
               let pass = view.currentRenderPassDescriptor,
-              let buffer = resources.queue.makeCommandBuffer(),
-              let encoder = buffer.makeRenderCommandEncoder(descriptor: pass) else { return }
+              let buffer = resources.queue.makeCommandBuffer() else { return }
+
+        let drawnLayer = blend == nil ? GlobeLayer.daylight : weatherLayer
+
+        // Move the wind particles on before the globe samples their trails.
+        // With motion reduced they hold still, showing the trails they were
+        // warmed up with.
+        var trail = resources.emptyTrail
+        if drawnLayer == .wind, let windField, let particles {
+            if animateWind {
+                let now = ProcessInfo.processInfo.systemUptime
+                let seconds = lastParticleStep.map { Float(now - $0) } ?? 1 / 30
+                lastParticleStep = now
+                particles.step(through: windField, seconds: seconds, into: buffer)
+            }
+            trail = particles.trail
+        }
+        guard let encoder = buffer.makeRenderCommandEncoder(descriptor: pass) else {
+            // Still commit, so the particles' hold on their segment buffer is released.
+            buffer.commit()
+            return
+        }
 
         let lat = Float(camera.latitude) * .pi / 180
         let lon = Float(camera.longitude) * .pi / 180
@@ -202,8 +270,6 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
         let weatherBounds = (blend == nil ? nil : weatherRegion).map {
             SIMD4(Float($0.north), Float($0.west), Float($0.latitudeSpan), Float($0.longitudeSpan))
         } ?? .zero
-        let weatherTime = animateWind ? ProcessInfo.processInfo.systemUptime.truncatingRemainder(dividingBy: 3600) : 0
-        let drawnLayer = blend == nil ? GlobeLayer.daylight : weatherLayer
         var uniforms = Uniforms(
             front: [cos(lat) * cos(lon), cos(lat) * sin(lon), sin(lat), 0],
             east: [-sin(lon), cos(lon), 0, 0],
@@ -211,7 +277,7 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
             sun: [cos(solarLat) * cos(solarLon), cos(solarLat) * sin(solarLon), sin(solarLat), 0],
             viewport: [Float(view.drawableSize.width) / diameter, Float(view.drawableSize.height) / diameter, .pi * diameter, 0],
             weatherRegion: weatherBounds,
-            weatherState: [Float(drawnLayer.rawValue), Float(weatherTime),
+            weatherState: [Float(drawnLayer.rawValue), 0,
                            Float(drawnLayer.overlayOpacity), Float(GlobeLayer.allCases.count)],
             weatherScale: [Float(GlobeLayer.wind.domain.upperBound),
                            Float(WeatherSample.windComponentLimit), blend?.progress ?? 0,
@@ -226,6 +292,7 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
         encoder.setFragmentTexture(blend?.earlier ?? resources.emptyWeather, index: 3)
         encoder.setFragmentTexture(resources.colorRamps, index: 4)
         encoder.setFragmentTexture(blend?.later ?? resources.emptyWeather, index: 5)
+        encoder.setFragmentTexture(trail, index: 6)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         encoder.endEncoding()
         buffer.present(drawable)
@@ -250,6 +317,42 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
         return { float4(triangle[index], 0, 1), triangle[index] };
     }
 
+    // Wind trails live in the weather region's coordinates: x runs east and
+    // y runs south across the region, both from 0 to 1, matching the readings.
+    struct TrailVertex {
+        float4 position [[position]];
+        float2 uv;
+    };
+
+    vertex TrailVertex trailFadeVertex(uint index [[vertex_id]]) {
+        const float2 triangle[] = { float2(-1, -1), float2(3, -1), float2(-1, 3) };
+        float2 corner = triangle[index];
+        return { float4(corner, 0, 1), float2(corner.x * 0.5 + 0.5, 0.5 - corner.y * 0.5) };
+    }
+
+    // Each step starts from the previous trails, dimmed, so older moves fade.
+    fragment float4 trailFadeFragment(TrailVertex input [[stage_in]],
+                                      texture2d<float> previous [[texture(0)]],
+                                      constant float& survival [[buffer(0)]]) {
+        constexpr sampler exact(address::clamp_to_edge, filter::nearest);
+        return float4(previous.sample(exact, input.uv).r * survival, 0, 0, 1);
+    }
+
+    struct ParticleVertex {
+        float4 position [[position]];
+    };
+
+    // Each particle's latest move, as a line from where it was to where it is.
+    vertex ParticleVertex particleVertex(uint index [[vertex_id]],
+                                         const device float2* points [[buffer(0)]]) {
+        float2 point = points[index];
+        return { float4(point.x * 2.0 - 1.0, 1.0 - point.y * 2.0, 0, 1) };
+    }
+
+    fragment float4 particleFragment(ParticleVertex input [[stage_in]]) {
+        return float4(1, 0, 0, 1);
+    }
+
     float2 earthUV(float3 normal) {
         const float pi = 3.14159265359;
         return float2(0.5 + atan2(normal.y, normal.x) / (2.0 * pi),
@@ -257,7 +360,8 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
     }
 
     float4 weatherColor(float2 earth, constant Uniforms& globe, texture2d<float> weather,
-                        texture2d<float> ramps, texture2d<float> weatherLater) {
+                        texture2d<float> ramps, texture2d<float> weatherLater,
+                        texture2d<float> trails) {
         float latitude = 90.0 - earth.y * 180.0;
         float longitude = earth.x * 360.0 - 180.0;
         float offset = fmod(longitude - globe.weatherRegion.y + 360.0, 360.0);
@@ -297,17 +401,9 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
             float speed = length(velocity);
             position = min(speed / ceiling, 1.0);
 
-            float2 heading = float2(velocity.x, -velocity.y) / max(speed, 0.001);
-            float2 grid = uv * float2(24.0, 19.0);
-            float2 cell = floor(grid);
-            float2 offsetInCell = fract(grid) - 0.5;
-            float sideways = abs(dot(offsetInCell, float2(-heading.y, heading.x)));
-            float random = fract(sin(dot(cell, float2(12.9898, 78.233))) * 43758.5453);
-            float drive = globe.weatherState.y * min(speed / ceiling, 1.5);
-            float pulse = smoothstep(0.32, 0.5,
-                                     0.5 - abs(fract(dot(offsetInCell, heading) - drive + random) - 0.5));
-            streak = (1.0 - smoothstep(0.025, 0.08, sideways)) * pulse
-                * smoothstep(1.0, 8.0, speed) * (1.0 - smoothstep(0.27, 0.49, length(offsetInCell)));
+            // The particles' trails, kept in the same region coordinates.
+            constexpr sampler trailSampler(address::clamp_to_edge, filter::linear);
+            streak = smoothstep(0.04, 0.85, trails.sample(trailSampler, uv).r);
         } else {
             position = layer == 1.0 ? reading.r : reading.g;
         }
@@ -325,7 +421,8 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
                                   texture2d<float> clouds [[texture(2)]],
                                   texture2d<float> weather [[texture(3)]],
                                   texture2d<float> ramps [[texture(4)]],
-                                  texture2d<float> weatherLater [[texture(5)]]) {
+                                  texture2d<float> weatherLater [[texture(5)]],
+                                  texture2d<float> trails [[texture(6)]]) {
         constexpr sampler imagery(s_address::repeat, t_address::clamp_to_edge,
                                    min_filter::linear, mag_filter::linear, mip_filter::linear);
         const float cloudRadius = 1.009;
@@ -391,7 +488,7 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
         float edge = 1.0 - smoothstep(cloudRadius - edgeWidth, cloudRadius + edgeWidth, distance);
         scene = mix(scene, cloudColor, coverage * edge);
         if (globe.weatherState.x > 0.0 && distance < 1.0) {
-            float4 weatherLayer = weatherColor(uv, globe, weather, ramps, weatherLater);
+            float4 weatherLayer = weatherColor(uv, globe, weather, ramps, weatherLater, trails);
             scene = mix(scene, weatherLayer.rgb, weatherLayer.a * silhouette);
         }
         return float4(scene, 1.0);

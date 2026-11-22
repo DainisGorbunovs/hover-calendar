@@ -27,7 +27,9 @@ Hover over the built-in date and time or the space directly above it. Clicking t
 
 ## Apple Weather layers
 
-Open **… → Weather Layers** to choose **Temperature**, **Precipitation**, or **Wind**. The globe zooms to the selected city’s region and draws Apple Weather’s forecast over it. Wind streaks follow the wind. The weather badge shows the reading at the city and credits Apple Weather.
+Open **… → Weather Layers** to choose **Temperature**, **Precipitation**, or **Wind**. The globe zooms to the selected city’s region and draws Apple Weather’s forecast over it. The weather badge shows the reading at the city and credits Apple Weather.
+
+The wind layer carries a few thousand particles on the forecast wind, each leaving a fading trail, the way Apple’s own wind map does: every frame dims the previous trails and draws each particle’s latest move on top. The trails are kept in the region’s own coordinates rather than on the screen, so orbiting or zooming the globe never smears them. A particle covers in one second the distance the wind would carry air in a few hours, so a breeze visibly crosses the region while calm air barely moves. With Reduce Motion on, the layer shows the trails from a moment of flow and holds them still.
 
 The forecast comes from Apple in one of two ways, and the app picks whichever this build can use.
 
