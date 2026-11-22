@@ -133,6 +133,7 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
         var viewport: SIMD4<Float>
         var weatherRegion: SIMD4<Float>
         var weatherState: SIMD4<Float>
+        var weatherScale: SIMD4<Float>
     }
 
     init(resources: Resources) {
@@ -191,7 +192,9 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
             viewport: [Float(view.drawableSize.width) / diameter, Float(view.drawableSize.height) / diameter, .pi * diameter, 0],
             weatherRegion: weatherBounds,
             weatherState: [Float(drawnLayer.rawValue), Float(weatherTime),
-                           Float(drawnLayer.overlayOpacity), Float(GlobeLayer.allCases.count)]
+                           Float(drawnLayer.overlayOpacity), Float(GlobeLayer.allCases.count)],
+            weatherScale: [Float(GlobeLayer.wind.domain.upperBound),
+                           Float(WeatherSample.windComponentLimit), 0, 0]
         )
 
         encoder.setRenderPipelineState(resources.pipeline)
@@ -217,7 +220,7 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
     };
 
     struct Uniforms {
-        float4 front, east, north, sun, viewport, weatherRegion, weatherState;
+        float4 front, east, north, sun, viewport, weatherRegion, weatherState, weatherScale;
     };
 
     vertex Vertex globeVertex(uint index [[vertex_id]]) {
@@ -253,9 +256,11 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
         float position;
         float streak = 0.0;
         if (layer == 3.0) {
-            float2 velocity = reading.ba * 360.0 - 180.0;
+            float limit = max(globe.weatherScale.y, 1.0);
+            float ceiling = max(globe.weatherScale.x, 1.0);
+            float2 velocity = reading.ba * (2.0 * limit) - limit;
             float speed = length(velocity);
-            position = min(speed / 120.0, 1.0);
+            position = min(speed / ceiling, 1.0);
 
             float2 heading = float2(velocity.x, -velocity.y) / max(speed, 0.001);
             float2 grid = uv * float2(24.0, 19.0);
@@ -263,7 +268,7 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
             float2 offsetInCell = fract(grid) - 0.5;
             float sideways = abs(dot(offsetInCell, float2(-heading.y, heading.x)));
             float random = fract(sin(dot(cell, float2(12.9898, 78.233))) * 43758.5453);
-            float drive = globe.weatherState.y * min(speed / 120.0, 1.5);
+            float drive = globe.weatherState.y * min(speed / ceiling, 1.5);
             float pulse = smoothstep(0.32, 0.5,
                                      0.5 - abs(fract(dot(offsetInCell, heading) - drive + random) - 0.5));
             streak = (1.0 - smoothstep(0.025, 0.08, sideways)) * pulse

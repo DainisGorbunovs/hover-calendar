@@ -35,7 +35,9 @@ Live weather uses a signed macOS build with an Apple Developer Program profile f
 
 The temperature and precipitation layers use Apple Weather's own map-overlay colour scales, so a reading shows the same colour here as it does in Weather. Apple Weather downloads those scales and caches them unencrypted in its own container on this Mac, at `~/Library/Containers/com.apple.weather/Data/Library/Caches/MapOverlays/`. Opening Weather once and showing the map writes that cache. Each scale is a list of stops pairing a physical value with an RGBA colour, interpolated linearly in between.
 
-Temperature runs from −40 °C to 55 °C across fourteen stops, deep violet through blue, cyan and yellow to dark red. Precipitation runs from 0.01 mm/h to 205 mm/h across eight stops, with the lightest almost fully transparent so a drizzle tints the globe instead of covering it. The globe samples the precipitation scale on a logarithmic curve, matching how the forecast values are stored, which keeps the detail where ordinary rain falls.
+Temperature runs from −40 °C to 55 °C across fourteen stops, deep violet through blue, cyan and yellow to dark red. Precipitation runs to 205 mm/h across eight stops, the lightest almost fully transparent so a drizzle tints the globe instead of covering it.
+
+The globe stores each reading across exactly the range its scale covers, taken from the scale itself so the two cannot drift apart, and clamps rather than wraps past either end. Precipitation follows a logarithmic curve, so the ordinary millimetre or two keeps most of the ramp instead of being crushed against one end by the cloudburst at the top of the scale.
 
 Apple builds its wind colours in code rather than publishing them in that cache, so the wind ramp is this app's own. It is shaped like the others and can be replaced without touching the renderer.
 

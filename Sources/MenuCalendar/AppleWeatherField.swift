@@ -28,9 +28,6 @@ enum GlobeLayer: Int, CaseIterable, Identifiable {
 }
 
 extension GlobeLayer {
-    /// How far a reading can travel along this layer's ramp before it clamps.
-    static let windSpeedCeiling = 120.0
-
     var colorStops: [WeatherColorScale.Stop]? {
         switch self {
         case .daylight: nil
@@ -50,14 +47,45 @@ extension GlobeLayer {
         }
     }
 
-    /// Turns a 0…1 position along the ramp back into a physical value, undoing
-    /// the encoding `WeatherSample.textureChannels` applies.
-    func value(at position: Double) -> Double {
+    /// The range of readings the sample texture stores for this layer, taken
+    /// from the ramp itself so the two cannot drift apart. Temperature spans
+    /// its ramp exactly, the way Apple's own scale does; precipitation and
+    /// wind both start at nothing and run to the top of the ramp.
+    var domain: ClosedRange<Double> {
+        guard let stops = colorStops, let first = stops.first, let last = stops.last,
+              first.value < last.value else { return 0...1 }
         switch self {
-        case .daylight: 0
-        case .temperature: position * 140 - 70
-        case .precipitation: expm1(position * log1p(80))
-        case .wind: position * Self.windSpeedCeiling
+        case .temperature: return first.value...last.value
+        case .precipitation, .wind: return 0...last.value
+        case .daylight: return 0...1
+        }
+    }
+
+    /// Places a reading on its ramp as a 0…1 position, clamping past either end.
+    ///
+    /// Precipitation follows a logarithmic curve so the ordinary millimetre or
+    /// two keeps most of the ramp, rather than being crushed against one end by
+    /// the cloudburst at the top of the scale.
+    func encode(_ reading: Double) -> Double {
+        let range = domain
+        let span = range.upperBound - range.lowerBound
+        guard span > 0 else { return 0 }
+        switch self {
+        case .precipitation:
+            return log1p(max(0, reading)) / log1p(range.upperBound)
+        default:
+            return min(1, max(0, (reading - range.lowerBound) / span))
+        }
+    }
+
+    /// Turns a 0…1 position back into a reading, undoing `encode`.
+    func value(at position: Double) -> Double {
+        let range = domain
+        switch self {
+        case .precipitation:
+            return expm1(position * log1p(range.upperBound))
+        default:
+            return range.lowerBound + position * (range.upperBound - range.lowerBound)
         }
     }
 }
@@ -97,16 +125,23 @@ struct WeatherSample: Sendable {
     let east: Double
     let north: Double
 
+    /// How far either wind component can reach before it clamps, in km/h.
+    static let windComponentLimit = 180.0
+
     var textureChannels: [UInt16] {
-        func encode(_ value: Double) -> UInt16 {
-            UInt16((min(1, max(0, value)) * Double(UInt16.max)).rounded())
+        func channel(_ position: Double) -> UInt16 {
+            UInt16((min(1, max(0, position)) * Double(UInt16.max)).rounded())
         }
 
+        // Temperature and precipitation are stored on their ramps. Wind keeps
+        // its two components signed, and the globe turns them back into a
+        // speed before looking that up on the wind ramp.
+        let limit = Self.windComponentLimit
         return [
-            encode((temperature + 70) / 140),
-            encode(log1p(precipitation) / log1p(80)),
-            encode((east + 180) / 360),
-            encode((north + 180) / 360)
+            channel(GlobeLayer.temperature.encode(temperature)),
+            channel(GlobeLayer.precipitation.encode(precipitation)),
+            channel((east + limit) / (2 * limit)),
+            channel((north + limit) / (2 * limit))
         ]
     }
 }
