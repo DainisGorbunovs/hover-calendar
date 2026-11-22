@@ -23,7 +23,7 @@ struct WorldClockLocation: Identifiable, Equatable {
         ("Chicago", "America/Chicago", "🇺🇸", 41.8781, -87.6298),
         ("San Francisco", "America/Los_Angeles", "🇺🇸", 37.7749, -122.4194),
         ("Riga", "Europe/Riga", "🇱🇻", 56.9496, 24.1052),
-        ("Taipei", "Asia/Taipei", "🇹🇼", 25.0330, 121.5654)
+        ("Taipei", "Asia/Taipei", "🍠", 25.0330, 121.5654)
     ].compactMap { name, identifier, flag, latitude, longitude in
         TimeZone(identifier: identifier).map {
             WorldClockLocation(name: name, timeZone: $0, flag: flag, latitude: latitude, longitude: longitude)
