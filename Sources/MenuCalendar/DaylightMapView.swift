@@ -142,11 +142,25 @@ struct DaylightMapView: View {
     private func loadWeather(_ region: WeatherRegion) async {
         weatherFailed = false
         weatherProblem = nil
+        // Use what the service already holds; failing that, Weather's own
+        // forecast for a place it tracks is on this Mac, so show it at once
+        // while a fuller grid is fetched.
+        if weather?.region != region {
+            if let cached = await AppleWeatherService.shared.cachedField(for: region) {
+                weather = cached
+            } else if !AppleWeatherService.entitled,
+                      let quick = try? AppleWeatherService.storedField(for: region) {
+                weather = quick
+            }
+        }
         do {
             let loaded = try await AppleWeatherService.shared.field(for: region)
             if !Task.isCancelled { weather = loaded }
         } catch {
-            guard !Task.isCancelled else { return }
+            // A newer region took this one's place; that load will report.
+            guard !Task.isCancelled, !(error is CancellationError) else { return }
+            // Keep what is already showing for this region rather than blank it.
+            if weather?.region == region { return }
             weatherProblem = error as? AppleWeatherService.Problem
             weatherFailed = true
         }

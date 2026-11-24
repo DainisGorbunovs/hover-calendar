@@ -43,7 +43,10 @@ extension GlobeLayer {
         switch self {
         case .daylight: 0
         case .temperature: 0.64
-        case .precipitation, .wind: 1
+        // Apple's wind blue is opaque; its map draws coastlines on top, and the
+        // globe has none, so let the land show faintly through instead.
+        case .wind: 0.8
+        case .precipitation: 1
         }
     }
 
@@ -167,6 +170,9 @@ struct AppleWeatherField: Sendable {
     let frames: [WeatherFrame]
     let attribution: WeatherAttribution?
     var coverage = Coverage.grid
+    /// Tells one fetch from another, so a refreshed forecast for the same
+    /// region and hours is drawn afresh rather than from the old one's uploads.
+    let identity = UUID()
 
     var date: Date { frames.first?.date ?? .distantPast }
 
@@ -214,42 +220,179 @@ actor AppleWeatherService {
 
     enum Problem: Error {
         case invalidReading
-        /// Without WeatherKit, a city only has weather if Weather tracks it.
+        /// No grid could be had, and Weather does not track a place here.
         case placeNotTracked
+        /// The shortcut is installed but its run failed, and Weather does not
+        /// track a place here either.
+        case shortcutFailed
+        /// The installed shortcut predates the answer format this build reads.
+        case shortcutOutdated
     }
 
-    private var cache: [WeatherRegion: (field: AppleWeatherField, fetched: Date, lifetime: TimeInterval)] = [:]
-    private var requests: [WeatherRegion: Task<AppleWeatherField, Error>] = [:]
+    private struct Fetched {
+        let field: AppleWeatherField
+        let lifetime: TimeInterval
+    }
+
+    private enum ShortcutOutcome {
+        case grid(AppleWeatherField)
+        case missing, outdated, failed
+        /// A newer region was asked for before this run could start.
+        case superseded
+    }
+
+    private var cache: [WeatherRegion: (fetched: Fetched, at: Date)] = [:]
+    private var requests: [WeatherRegion: Task<Fetched, Error>] = [:]
     private var attribution: WeatherAttribution?
+
+    /// The latest grid for each region, kept past its cache lifetime so a
+    /// failed refresh can fall back on it while its hours still lie ahead.
+    private var lastGrid: [WeatherRegion: AppleWeatherField] = [:]
+    /// When the shortcut was last found missing, outdated or failing. Each
+    /// costs a process to rediscover, so wait a while before asking again.
+    private var shortcutMissingSince: Date?
+    private var shortcutOutdatedSince: Date?
+    private var shortcutFailedSince: Date?
+    /// The run in progress, so Shortcuts is only ever asked one grid at a time.
+    private var shortcutQueue: Task<Void, Never>?
+    /// The region most recently asked for. A queued run for any other region
+    /// is skipped when its turn comes, because the user has moved on.
+    private var latestShortcutRegion: WeatherRegion?
+    private var latestShortcutRequest = Date.distantPast
+    /// The region the shortcut is fetching right now, if any.
+    private var runningShortcutRegion: WeatherRegion?
 
     /// A fetch stays useful for far longer than it used to: it brings back
     /// hours of forecast, and the globe reads the current moment out of it
     /// rather than redrawing a snapshot. Holding it an hour keeps the display
-    /// current while asking WeatherKit for a quarter as much.
+    /// current while asking for a quarter as much.
     private static let cacheLifetime = 60.0 * 60
 
     /// Reading the store costs nothing but a local query, and weatherd keeps
-    /// revising it, so look again far sooner.
+    /// revising it, so look again far sooner. A grid from the shortcut, once it
+    /// has been added, replaces it within this long.
     private static let storeLifetime = 10.0 * 60
+    private static let shortcutRecheck = 5.0 * 60
+    private static let shortcutBackoff = 3.0 * 60
+    /// How long a region must stay wanted before its run starts.
+    private static let shortcutSettle = 0.6
 
+    /// The best forecast this build can get for the region: WeatherKit's grid
+    /// when signed for it; otherwise the shortcut's grid, if the user added it;
+    /// otherwise Weather's forecast for a place it tracks there, as a halo.
     func field(for region: WeatherRegion) async throws -> AppleWeatherField {
-        let now = Date.now
-        cache = cache.filter { now.timeIntervalSince($0.value.fetched) < $0.value.lifetime }
-        if let existing = cache[region] { return existing.field }
+        if let cached = cachedField(for: region) { return cached }
+        if let running = requests[region] { return try await running.value.field }
 
-        guard Self.entitled else {
-            let field = try Self.storedField(for: region)
-            cache[region] = (field, .now, Self.storeLifetime)
-            return field
-        }
-        if let running = requests[region] { return try await running.value }
-
-        let running = Task { try await fetch(region) }
+        let running = Task { try await best(for: region) }
         requests[region] = running
         defer { requests[region] = nil }
-        let field = try await running.value
-        cache[region] = (field, .now, Self.cacheLifetime)
-        return field
+        let fetched = try await running.value
+        cache[region] = (fetched, .now)
+        return fetched.field
+    }
+
+    /// What is already to hand for the region, without fetching anything.
+    func cachedField(for region: WeatherRegion) -> AppleWeatherField? {
+        let now = Date.now
+        cache = cache.filter { now.timeIntervalSince($0.value.at) < $0.value.fetched.lifetime }
+        return cache[region]?.fetched.field
+    }
+
+    private func best(for region: WeatherRegion) async throws -> Fetched {
+        if Self.entitled {
+            return Fetched(field: try await fetch(region), lifetime: Self.cacheLifetime)
+        }
+        let outcome = await shortcutField(for: region)
+        switch outcome {
+        case .grid(let grid):
+            lastGrid[region] = grid
+            return Fetched(field: grid, lifetime: Self.cacheLifetime)
+        case .superseded:
+            throw CancellationError()
+        case .missing, .outdated, .failed:
+            break
+        }
+        // Keep showing an earlier grid while it still has hours to come,
+        // rather than falling back to a single point.
+        if let grid = lastGrid[region], let last = grid.frames.last, last.date > .now {
+            return Fetched(field: grid, lifetime: Self.storeLifetime)
+        }
+        do {
+            return Fetched(field: try Self.storedField(for: region), lifetime: Self.storeLifetime)
+        } catch {
+            switch outcome {
+            case .outdated: throw Problem.shortcutOutdated
+            case .failed: throw Problem.shortcutFailed
+            default: throw Problem.placeNotTracked
+            }
+        }
+    }
+
+    private static func recent(_ date: Date?, within interval: TimeInterval) -> Bool {
+        date.map { Date.now.timeIntervalSince($0) < interval } ?? false
+    }
+
+    /// Whether a queued run should still start: its region is still the one
+    /// wanted, and nothing learnt while it waited rules the shortcut out.
+    private func shouldStartShortcut(for region: WeatherRegion) -> Bool {
+        latestShortcutRegion == region
+            && !Self.recent(shortcutMissingSince, within: Self.shortcutRecheck)
+            && !Self.recent(shortcutOutdatedSince, within: Self.shortcutRecheck)
+    }
+
+    /// The region's grid from the user's shortcut, or why there is none.
+    private func shortcutField(for region: WeatherRegion) async -> ShortcutOutcome {
+        if Self.recent(shortcutMissingSince, within: Self.shortcutRecheck) { return .missing }
+        if Self.recent(shortcutOutdatedSince, within: Self.shortcutRecheck) { return .outdated }
+        if Self.recent(shortcutFailedSince, within: Self.shortcutBackoff) { return .failed }
+
+        latestShortcutRegion = region
+        latestShortcutRequest = .now
+        // A run for a region the user has left would only make this one wait.
+        if let running = runningShortcutRegion, running != region {
+            ShortcutWeather.supersedeRunning()
+        }
+        let previous = shortcutQueue
+        let run = Task { () throws -> [[Date: WeatherSample]] in
+            await previous?.value
+            // Start only once the user has settled on the region: passing over
+            // cities on the way to another should not spawn a run for each.
+            guard self.shouldStartShortcut(for: region) else { throw CancellationError() }
+            let unsettled = Self.shortcutSettle - Date.now.timeIntervalSince(self.latestShortcutRequest)
+            if unsettled > 0 { try await Task.sleep(nanoseconds: UInt64(unsettled * 1_000_000_000)) }
+            guard self.shouldStartShortcut(for: region) else { throw CancellationError() }
+            self.runningShortcutRegion = region
+            defer { self.runningShortcutRegion = nil }
+            return try await ShortcutWeather.forecasts(for: region)
+        }
+        shortcutQueue = Task { _ = try? await run.value }
+
+        do {
+            let frames = Self.frames(from: try await run.value)
+            shortcutMissingSince = nil
+            shortcutOutdatedSince = nil
+            guard !frames.isEmpty else {
+                shortcutFailedSince = .now
+                return .failed
+            }
+            shortcutFailedSince = nil
+            return .grid(AppleWeatherField(region: region, frames: frames, attribution: nil))
+        } catch is CancellationError {
+            return Self.recent(shortcutMissingSince, within: Self.shortcutRecheck) ? .missing
+                : Self.recent(shortcutOutdatedSince, within: Self.shortcutRecheck) ? .outdated : .superseded
+        } catch ShortcutWeather.Failure.notInstalled {
+            shortcutMissingSince = .now
+            return .missing
+        } catch ShortcutWeather.Failure.outdated {
+            shortcutOutdatedSince = .now
+            return .outdated
+        } catch {
+            shortcutFailedSince = .now
+            // The kind of failure only: Shortcuts' own message can name places.
+            NSLog("Menu Calendar weather shortcut failed: %@", ShortcutWeather.describe(error))
+            return .failed
+        }
     }
 
     /// Apple's forecast for the tracked place at the middle of the region,
@@ -325,8 +468,20 @@ actor AppleWeatherService {
 
     /// Turns one hourly series per grid point into whole-grid frames, keeping
     /// only the hours every point reported so no frame has a hole in it.
-    private static func frames(from grid: [[Date: WeatherSample]]) -> [WeatherFrame] {
-        guard let first = grid.first else { return [] }
+    static func frames(from grid: [[Date: WeatherSample]]) -> [WeatherFrame] {
+        guard !grid.isEmpty else { return [] }
+        // Shortcuts starts each point's hours at that point's local hour, so
+        // in a half-hour time zone a point can begin an hour after the rest.
+        // Let its first hour stand in for the one before, rather than lose the
+        // current hour for the whole grid.
+        var grid = grid
+        if let earliest = grid.compactMap({ $0.keys.min() }).min() {
+            let next = earliest.addingTimeInterval(3600)
+            for index in grid.indices where grid[index][earliest] == nil {
+                if let sample = grid[index][next] { grid[index][earliest] = sample }
+            }
+        }
+        let first = grid[0]
         let shared = first.keys
             .filter { date in grid.allSatisfy { $0[date] != nil } }
             .sorted()

@@ -148,6 +148,8 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
     private var weatherLayer = GlobeLayer.daylight
     private var weatherRegion: WeatherRegion?
     private var weatherCoverage = AppleWeatherField.Coverage.grid
+    /// Which fetch the uploaded hours came from.
+    private var weatherIdentity: UUID?
     /// One uploaded grid per forecast hour, kept while the region holds still.
     private var frameTextures: [Date: MTLTexture] = [:]
     /// The two hours the globe is drawing between, and how far across it sits.
@@ -182,12 +184,14 @@ final class GlobeMetalRenderer: NSObject, MTKViewDelegate {
             blend = nil
             frameTextures.removeAll()
             weatherRegion = nil
+            weatherIdentity = nil
             windField = nil
             particleField = nil
             return
         }
-        if weatherRegion != field.region || weatherCoverage != field.coverage {
+        if weatherIdentity != field.identity {
             frameTextures.removeAll()
+            weatherIdentity = field.identity
             weatherRegion = field.region
             weatherCoverage = field.coverage
         }

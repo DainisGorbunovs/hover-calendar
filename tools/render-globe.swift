@@ -13,7 +13,7 @@ import UniformTypeIdentifiers
 
 @main
 enum RenderGlobe {
-    static func main() {
+    static func main() async {
         let arguments = CommandLine.arguments
         guard arguments.count > 2 else {
             FileHandle.standardError.write(Data("usage: render-globe <textures> <output>\n".utf8))
@@ -152,6 +152,24 @@ enum RenderGlobe {
         if let reading = live.center(at: now) {
             print(String(format: "live: %@ %.1f °C, %.2f mm/h, wind %.0f km/h", city.name,
                          reading.temperature, reading.precipitation, hypot(reading.east, reading.north)))
+        }
+
+        // And the full grid for the same region, through the user's shortcut,
+        // if it has been added.
+        do {
+            let frames = AppleWeatherService.frames(from: try await ShortcutWeather.forecasts(for: live.region))
+            let grid = AppleWeatherField(region: live.region, frames: frames, attribution: nil)
+            for layer in [GlobeLayer.temperature, .precipitation, .wind] {
+                let name = layer.title.replacingOccurrences(of: " ", with: "")
+                render("live-grid-\(name).png", camera: liveCamera, layer: layer, at: now, from: grid)
+            }
+            if let first = frames.first {
+                let temperatures = first.samples.map(\.temperature)
+                print(String(format: "live grid: %d hours, %.1f…%.1f °C across the region",
+                             frames.count, temperatures.min() ?? .nan, temperatures.max() ?? .nan))
+            }
+        } catch {
+            print("no live grid (\(error)); add the Menu Calendar Weather shortcut to draw one")
         }
     }
 }

@@ -65,10 +65,11 @@ struct GlobeWeatherBadge: View {
     }
 
     private var status: String {
-        if case .placeNotTracked = problem {
-            return "Add \(city) in Weather to see it here"
+        switch problem {
+        case .placeNotTracked: return "Add \(city) in Weather to see it here"
+        case .shortcutOutdated: return "Update the \(ShortcutWeather.name) shortcut"
+        default: return failed ? "Apple Weather unavailable" : "Loading Apple Weather…"
         }
-        return failed ? "Apple Weather unavailable" : "Loading Apple Weather…"
     }
 
     private var scale: some View {

@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         DaylightMapView.prepareGlobe()
+        ShortcutWeather.removeLeftovers()
         let timer = Timer(timeInterval: 0.09, target: self, selector: #selector(checkPointer),
                           userInfo: nil, repeats: true)
         timer.tolerance = 0.02
@@ -48,6 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        ShortcutWeather.terminateRunning()
         timer?.invalidate()
         if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
         if let localMonitor { NSEvent.removeMonitor(localMonitor) }

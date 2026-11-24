@@ -14,6 +14,7 @@ swiftc -O \
     "$sources/AppleWeatherField.swift" \
     "$sources/AppleWeatherStore.swift" \
     "$sources/WindParticles.swift" \
+    "$sources/ShortcutWeather.swift" \
     "$sources/WorldClockLocation.swift" \
     "$sources/SolarPosition.swift" \
     "$sources/GlobeCamera.swift" \
